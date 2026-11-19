@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use egui::{FontData, FontFamily, RichText};
@@ -29,6 +31,13 @@ pub struct MediaTranscriberApp {
     key_rx: Receiver<(CloudProvider, Result<(), String>)>,
     system_tx: Sender<SystemProfile>,
     system_rx: Receiver<SystemProfile>,
+    install_tx: Sender<InstallEvent>,
+    install_rx: Receiver<InstallEvent>,
+}
+
+enum InstallEvent {
+    Progress(u64, u64),
+    Finished(Result<String, String>),
 }
 
 impl MediaTranscriberApp {
@@ -86,8 +95,9 @@ impl MediaTranscriberApp {
         }
         let (key_tx, key_rx) = mpsc::channel();
         let (system_tx, system_rx) = mpsc::channel();
+        let (install_tx, install_rx) = mpsc::channel();
 
-        let mut app = Self { state, media, tasks, models, key_tx, key_rx, system_tx, system_rx };
+        let mut app = Self { state, media, tasks, models, key_tx, key_rx, system_tx, system_rx, install_tx, install_rx };
         // 최초 실행 시 하드웨어 검사 (백그라운드)
         app.collect_system_info(&cc.egui_ctx);
         app
@@ -103,6 +113,58 @@ impl MediaTranscriberApp {
         });
         if let Err(err) = spawned {
             tracing::error!(error = %err, "시스템 정보 스레드 생성 실패");
+        }
+    }
+
+    /// FFmpeg 자동 설치 요청/진행 처리 (다운로드는 백그라운드 스레드).
+    fn sync_ffmpeg_install(&mut self, ctx: &egui::Context) {
+        while let Ok(event) = self.install_rx.try_recv() {
+            match event {
+                InstallEvent::Progress(done, total) => {
+                    if let Some(p) = self.state.ffmpeg_install.as_mut() {
+                        p.done = done;
+                        p.total = total;
+                    }
+                }
+                InstallEvent::Finished(result) => {
+                    self.state.ffmpeg_install = None;
+                    match result {
+                        Ok(version) => {
+                            self.state.set_status(StatusLevel::Info, format!("FFmpeg {version} 설치 완료"));
+                            // 미디어 검사 스레드가 새로 설치된 FFmpeg 를 다시 찾게 한다
+                            self.state.ffmpeg_relocate_requested = true;
+                        }
+                        Err(msg) => self.state.set_status(StatusLevel::Error, format!("FFmpeg 설치 실패: {msg}")),
+                    }
+                }
+            }
+        }
+        if !std::mem::take(&mut self.state.ffmpeg_install_requested) || self.state.ffmpeg_install.is_some() {
+            return;
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let thread_cancel = Arc::clone(&cancel);
+        let dir = self.state.paths.ffmpeg_dir.clone();
+        let tx = self.install_tx.clone();
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new().name("ffmpeg-install".to_owned()).spawn(move || {
+            let progress_tx = tx.clone();
+            let progress_ctx = ctx.clone();
+            let result = crate::media::installer::install(&dir, &thread_cancel, |done, total| {
+                let _ = progress_tx.send(InstallEvent::Progress(done, total));
+                progress_ctx.request_repaint();
+            })
+            .map(|tools| tools.version().to_owned())
+            .map_err(|e| e.to_string());
+            if let Err(e) = &result {
+                tracing::warn!(error = %e, "FFmpeg 자동 설치 실패");
+            }
+            let _ = tx.send(InstallEvent::Finished(result));
+            ctx.request_repaint();
+        });
+        match spawned {
+            Ok(_) => self.state.ffmpeg_install = Some(crate::app::FfmpegInstall { done: 0, total: 0, cancel }),
+            Err(err) => self.state.set_status(StatusLevel::Error, format!("설치 스레드 생성 실패: {err}")),
         }
     }
 
@@ -287,6 +349,7 @@ impl eframe::App for MediaTranscriberApp {
         self.sync_workers();
         self.sync_key_check(ui.ctx());
         self.sync_system(ui.ctx());
+        self.sync_ffmpeg_install(ui.ctx());
         self.state.persist_settings_if_changed();
     }
 
@@ -296,6 +359,9 @@ impl eframe::App for MediaTranscriberApp {
         self.state.cancel_all();
         for op in &self.state.model_ops {
             op.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(install) = &self.state.ffmpeg_install {
+            install.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         tracing::info!("종료 요청: 진행 중인 작업 취소");
     }

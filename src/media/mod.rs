@@ -5,6 +5,7 @@
 
 pub mod audio;
 pub mod ffmpeg;
+pub mod installer;
 pub mod worker;
 
 use std::path::PathBuf;

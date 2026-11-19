@@ -1,4 +1,11 @@
-# whisper.cpp 빌드 최적화 플래그 고정
+# C 런타임(CRT) 정적 링크
+#
+# VC++ 재배포 패키지(vcruntime140.dll 등)가 설치되지 않은 PC 에서도 실행되도록
+# Rust 코드와 whisper.cpp(C++) 를 모두 /MT 로 빌드한다.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# whisper.cpp 빌드 플래그 고정
 #
 # whisper-rs-sys 는 MSBuild "Release" 구성으로 whisper.cpp 를 빌드하는데,
 # cargo release 프로필에서는 cmake 크레이트(0.1.58)가 Visual Studio 생성기용으로
@@ -7,6 +14,8 @@
 #
 # whisper-rs-sys 는 CMAKE_* 환경변수를 CMake 정의로 전달하고, cmake 크레이트는
 # 이미 정의된 변수는 덮어쓰지 않으므로 여기서 명시적으로 지정한다.
+# 런타임은 위 crt-static 과 맞춰 정적(/MT, MultiThreaded)으로 한다.
 [env]
-CMAKE_C_FLAGS_RELEASE = "/MD /O2 /Ob2 /DNDEBUG"
-CMAKE_CXX_FLAGS_RELEASE = "/MD /O2 /Ob2 /DNDEBUG"
+CMAKE_C_FLAGS_RELEASE = "/MT /O2 /Ob2 /DNDEBUG"
+CMAKE_CXX_FLAGS_RELEASE = "/MT /O2 /Ob2 /DNDEBUG"
+CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"

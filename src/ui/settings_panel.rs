@@ -89,6 +89,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
         ui.add_space(16.0);
         ui.heading("FFmpeg");
         ui.add_space(6.0);
+        crate::ui::ffmpeg_install_banner(ui, state);
         egui::Grid::new("ffmpeg_grid").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
             ui.label("상태");
             match &state.ffmpeg {
@@ -211,11 +212,25 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
         ui.add_space(16.0);
         ui.heading("저장 위치");
         ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.button("로그 폴더 열기").on_hover_text("오류가 생기면 이 폴더의 로그를 확인하세요. (API Key·인식 텍스트는 기록되지 않음)").clicked()
+                && let Err(err) = crate::ui::result_panel::open_folder(&state.paths.log_dir)
+            {
+                state.set_status(StatusLevel::Error, format!("로그 폴더를 열 수 없습니다: {err}"));
+            }
+            if ui.button("모델 폴더 열기").clicked()
+                && let Err(err) = crate::ui::result_panel::open_folder(&state.paths.models_dir)
+            {
+                state.set_status(StatusLevel::Error, format!("모델 폴더를 열 수 없습니다: {err}"));
+            }
+        });
+        ui.add_space(4.0);
         egui::Grid::new("paths_grid").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
             for (name, path) in [
                 ("설정 파일", &state.paths.settings_file),
                 ("로그 폴더", &state.paths.log_dir),
                 ("모델 폴더", &state.paths.models_dir),
+                ("FFmpeg 자동 설치 폴더", &state.paths.ffmpeg_dir),
             ] {
                 ui.label(name);
                 ui.label(RichText::new(path.display().to_string()).monospace().weak());

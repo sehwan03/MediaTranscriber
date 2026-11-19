@@ -24,6 +24,7 @@ pub struct FfmpegTools {
 impl FfmpegTools {
     /// FFmpeg 를 다음 순서로 찾는다.
     /// 1. 사용자가 설정한 폴더
+    ///    (그다음) 앱이 자동 설치한 폴더 (%LOCALAPPDATA%\MediaTranscriber\data\ffmpeg)
     /// 2. 실행 파일 옆 `ffmpeg\` 폴더, 실행 파일 폴더 (배포용)
     /// 3. 현재 폴더의 `resources\ffmpeg` (개발용)
     /// 4. PATH
@@ -50,6 +51,21 @@ impl FfmpegTools {
 
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    /// 인코더 지원 여부 (예: "libmp3lame"). Cloud 업로드용 MP3 인코딩에 필요하다.
+    pub fn has_encoder(&self, name: &str) -> bool {
+        let output = base_command(&self.ffmpeg)
+            .args(["-hide_banner", "-encoders"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        match output {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|line| line.split_whitespace().nth(1) == Some(name)),
+            _ => false,
+        }
     }
 
     pub(super) fn ffmpeg_command(&self) -> Command {
@@ -108,6 +124,9 @@ fn candidate_dirs(user_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(dir) = user_dir {
         dirs.push(dir.to_path_buf());
+    }
+    if let Some(paths) = crate::config::AppPaths::resolve() {
+        dirs.push(paths.ffmpeg_dir);
     }
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
         dirs.push(exe_dir.join("ffmpeg"));

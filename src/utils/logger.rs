@@ -15,7 +15,24 @@ pub fn init(log_dir: &Path) -> Option<WorkerGuard> {
 
     match std::fs::create_dir_all(log_dir) {
         Ok(()) => {
-            let file_appender = tracing_appender::rolling::daily(log_dir, "media_transcriber.log");
+            // 일별 로그, 최근 14개 파일만 보관 (오래된 로그는 자동 삭제)
+            let file_appender = match tracing_appender::rolling::Builder::new()
+                .rotation(tracing_appender::rolling::Rotation::DAILY)
+                .filename_prefix("media_transcriber")
+                .filename_suffix("log")
+                .max_log_files(14)
+                .build(log_dir)
+            {
+                Ok(a) => a,
+                Err(err) => {
+                    eprintln!("로그 파일 생성 실패: {err}");
+                    let init = tracing_subscriber::registry().with(filter).with(console_layer).try_init();
+                    if let Err(init_err) = init {
+                        eprintln!("로거 초기화 실패: {init_err}");
+                    }
+                    return None;
+                }
+            };
             let (writer, guard) = tracing_appender::non_blocking(file_appender);
             let file_layer = fmt::layer().with_writer(writer).with_ansi(false).with_target(true);
             let init = tracing_subscriber::registry()

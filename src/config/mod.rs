@@ -17,6 +17,8 @@ pub struct AppPaths {
     pub settings_file: PathBuf,
     pub log_dir: PathBuf,
     pub models_dir: PathBuf,
+    /// 앱이 자동 설치한 FFmpeg 폴더
+    pub ffmpeg_dir: PathBuf,
     /// 출력 경로를 지정하지 않았을 때 사용할 기본 위치 (문서\MediaTranscriber)
     pub default_output_dir: PathBuf,
 }
@@ -32,6 +34,7 @@ impl AppPaths {
             settings_file: dirs.config_dir().join("settings.json"),
             log_dir: dirs.data_local_dir().join("logs"),
             models_dir: dirs.data_local_dir().join("models"),
+            ffmpeg_dir: dirs.data_local_dir().join("ffmpeg"),
             default_output_dir,
         })
     }

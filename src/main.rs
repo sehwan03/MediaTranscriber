@@ -26,6 +26,7 @@ fn main() -> anyhow::Result<()> {
     let _log_guard = utils::logger::init(&paths.log_dir);
 
     tracing::info!(version = APP_VERSION, "MediaTranscriber 시작");
+    install_panic_hook(paths.log_dir.clone());
     // whisper.cpp / ggml 의 stderr 로그를 tracing 으로 돌린다.
     whisper_rs::install_logging_hooks();
 
@@ -34,6 +35,7 @@ fn main() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("{APP_NAME} {APP_VERSION}"))
+            .with_icon(window_icon())
             .with_inner_size([1100.0, 720.0])
             .with_min_inner_size([800.0, 520.0])
             .with_drag_and_drop(true),
@@ -51,4 +53,37 @@ fn main() -> anyhow::Result<()> {
     }
     tracing::info!("MediaTranscriber 종료");
     result.map_err(|e| anyhow::anyhow!("GUI 실행 실패: {e}"))
+}
+
+/// 창 아이콘 (scripts/make-icon.ps1 이 만든 64x64 RGBA).
+fn window_icon() -> egui::IconData {
+    const RGBA: &[u8] = include_bytes!("../assets/icon-64.rgba");
+    egui::IconData { rgba: RGBA.to_vec(), width: 64, height: 64 }
+}
+
+/// 예기치 않은 오류(panic)를 로그 파일에 남기고, 사용자에게 로그 위치를 알린다.
+fn install_panic_hook(log_dir: std::path::PathBuf) {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_owned())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "알 수 없는 오류".to_owned());
+        tracing::error!(%location, %message, "예기치 않은 오류 (panic)");
+        // 작업 스레드의 panic 은 해당 작업만 실패하므로 알림창은 GUI(main) 스레드일 때만 띄운다.
+        if std::thread::current().name() == Some("main") {
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("MediaTranscriber 오류")
+                .set_description(format!(
+                    "예기치 않은 오류로 프로그램을 종료합니다.\n\n{message}\n\n로그 폴더: {}",
+                    log_dir.display()
+                ))
+                .show();
+        }
+        default_hook(info);
+    }));
 }

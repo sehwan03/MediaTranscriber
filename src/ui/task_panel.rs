@@ -37,6 +37,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
     });
+    super::ffmpeg_install_banner(ui, state);
     quick_settings(ui, state);
     auto_summary(ui, state);
     ui.separator();

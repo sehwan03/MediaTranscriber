@@ -3,7 +3,13 @@ name = "media-transcriber"
 version = "0.1.0"
 edition = "2024"
 description = "MediaTranscriber - 음성 및 동영상 텍스트 추출 프로그램"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sehwan03/MediaTranscriber"
 publish = false
+build = "build.rs"
+
+[build-dependencies]
+winresource = "0.1"
 
 [[bin]]
 name = "MediaTranscriber"
@@ -30,6 +36,8 @@ sha2 = "0.11"
 zeroize = { version = "1.9", features = ["derive"] }
 # Gemini 인라인 오디오 인코딩
 base64 = "0.22"
+# FFmpeg 자동 설치 (zip 해제)
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # 시스템 정보 (CPU, RAM, 디스크)
 sysinfo = { version = "0.40", default-features = false, features = ["system", "disk"] }
 

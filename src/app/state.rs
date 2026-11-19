@@ -126,12 +126,23 @@ pub struct AppState {
     /// 이번 일괄 처리 통계 (모두 끝나면 요약 메시지 표시)
     batch: Option<BatchStats>,
 
+    /// FFmpeg 자동 설치 진행 상태
+    pub ffmpeg_install: Option<FfmpegInstall>,
+    pub ffmpeg_install_requested: bool,
+
     /// 하드웨어 정보 (시작 시 백그라운드에서 수집)
     pub system: Option<SystemProfile>,
     pub system_refresh_requested: bool,
     /// 성능 측정 요청/진행 중인 모델
     pub benchmark_requested: Option<WhisperModel>,
     pub benchmark_running: Option<WhisperModel>,
+}
+
+/// FFmpeg 자동 설치 진행 상황.
+pub struct FfmpegInstall {
+    pub done: u64,
+    pub total: u64,
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// 완료된 결과 하나.
@@ -242,6 +253,8 @@ impl AppState {
             consent_checked: false,
             results: Vec::new(),
             batch: None,
+            ffmpeg_install: None,
+            ffmpeg_install_requested: false,
             system: None,
             system_refresh_requested: false,
             benchmark_requested: None,
@@ -836,6 +849,7 @@ mod tests {
             settings_file: dir.join("settings.json"),
             log_dir: dir.join("logs"),
             models_dir: dir.join("models"),
+            ffmpeg_dir: dir.join("ffmpeg"),
             default_output_dir: dir.join("out"),
         };
         let mut state = AppState::new(paths, Settings::default());
@@ -871,6 +885,7 @@ mod tests {
             settings_file: dir.join("settings.json"),
             log_dir: dir.join("logs"),
             models_dir: dir.join("models"),
+            ffmpeg_dir: dir.join("ffmpeg"),
             default_output_dir: dir.join("out"),
         };
         (AppState::new(paths, Settings::default()), dir)
