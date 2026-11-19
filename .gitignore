@@ -1,0 +1,4 @@
+/target
+/output
+/resources/models/*.bin
+/resources/ffmpeg/*.exe

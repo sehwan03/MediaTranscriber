@@ -1,0 +1,49 @@
+[package]
+name = "media-transcriber"
+version = "0.1.0"
+edition = "2024"
+description = "MediaTranscriber - 음성 및 동영상 텍스트 추출 프로그램"
+publish = false
+
+[[bin]]
+name = "MediaTranscriber"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+egui = "0.37"
+rfd = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+directories = "6"
+# whisper.cpp 로그를 tracing 으로 전달
+whisper-rs = { version = "0.16", features = ["tracing_backend"] }
+# 모델 다운로드 (STEP 4 Cloud API 에서도 사용). 작업 스레드에서 blocking 클라이언트로 사용한다.
+reqwest = { version = "0.13", features = ["blocking", "multipart", "json"] }
+sha2 = "0.11"
+# API Key 를 메모리에서 지울 때 사용
+zeroize = { version = "1.9", features = ["derive"] }
+# Gemini 인라인 오디오 인코딩
+base64 = "0.22"
+# 시스템 정보 (CPU, RAM, 디스크)
+sysinfo = { version = "0.40", default-features = false, features = ["system", "disk"] }
+
+# API Key 선택적 저장: Windows 자격 증명 관리자 (CredWriteW/CredReadW/CredDeleteW)
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_Graphics_Dxgi"] }
+
+# whisper.cpp(C++)는 debug 빌드에서도 최적화해야 테스트/개발 실행 속도가 현실적이다.
+[profile.dev.package.whisper-rs-sys]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"
