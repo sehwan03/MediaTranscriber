@@ -1,69 +1,76 @@
 use std::path::Path;
 
-use egui::RichText;
+use egui::{FontId, RichText, Sense, pos2, vec2};
 
+use super::theme::{self, Icon};
 use crate::app::{AppState, StatusLevel};
 
-/// 결과 영역: 완료된 파일 목록, TXT 열기, 결과 폴더 열기.
+/// 결과 카드: 최근 완료 결과, TXT 열기 · 폴더에서 보기, 결과 폴더 열기.
 pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.heading("결과");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("결과 폴더 열기").clicked() {
-                let dir = state.output_dir().to_path_buf();
-                if let Err(err) = open_folder(&dir) {
-                    tracing::warn!(dir = %dir.display(), error = %err, "결과 폴더 열기 실패");
-                    state.set_status(StatusLevel::Error, format!("결과 폴더를 열 수 없습니다: {err}"));
-                }
-            }
-            // 경로가 길면 제목을 덮지 않도록 남은 폭에서 잘라 표시한다.
-            let path = state.output_dir().display().to_string();
-            ui.add(egui::Label::new(RichText::new(&path).weak().monospace()).truncate())
-                .on_hover_text(path);
-        });
-    });
-    ui.separator();
-
     let mut error = None;
     let mut clear = false;
-    if state.results.is_empty() {
-        ui.label(RichText::new("완료된 파일이 없습니다.").weak());
-    } else {
+    theme::card(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(format!("완료 {}개 (최근 순)", state.results.len()));
-            if ui.small_button("결과 목록 비우기").on_hover_text("목록만 비웁니다. 저장된 TXT 파일은 삭제하지 않습니다.").clicked() {
-                clear = true;
+            ui.label(RichText::new("결과").font(theme::bold(15.5)).color(theme::TEXT));
+            if !state.results.is_empty() {
+                ui.label(RichText::new(state.results.len().to_string()).font(theme::bold(15.5)).color(theme::TEXT_FAINT));
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::icon_button_inline(ui, Icon::Folder, "결과 폴더 열기") {
+                    let dir = state.output_dir().to_path_buf();
+                    if let Err(err) = open_folder(&dir) {
+                        tracing::warn!(dir = %dir.display(), error = %err, "결과 폴더 열기 실패");
+                        error = Some(format!("결과 폴더를 열 수 없습니다: {err}"));
+                    }
+                }
+                if !state.results.is_empty() && theme::icon_button_inline(ui, Icon::Trash, "결과 목록 비우기 (TXT 파일은 삭제하지 않음)") {
+                    clear = true;
+                }
+            });
         });
-    }
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        for entry in state.results.iter().rev() {
-            let output = &entry.output;
-            ui.horizontal(|ui| {
-                if ui.small_button("열기").clicked()
-                    && let Err(err) = open_file(output)
+
+        if state.results.is_empty() {
+            ui.add_space(4.0);
+            ui.label(RichText::new("완료된 결과가 여기에 표시됩니다").size(12.5).color(theme::TEXT_FAINT));
+            return;
+        }
+        ui.add_space(2.0);
+        egui::ScrollArea::vertical().max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
+            for (i, entry) in state.results.iter().enumerate().rev() {
+                let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
+                let painter = ui.painter().clone();
+                if response.hovered() {
+                    painter.rect_filled(rect, egui::CornerRadius::same(theme::RADIUS_SM), theme::CARD_HOVER);
+                }
+                let icon = egui::Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), vec2(20.0, 20.0));
+                theme::paint_icon(&painter, icon, Icon::FileText, theme::SUCCESS);
+
+                let open_btn = egui::Rect::from_center_size(pos2(rect.right() - 46.0, rect.center().y), vec2(26.0, 26.0));
+                let reveal_btn = egui::Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), vec2(26.0, 26.0));
+                let text_left = icon.right() + 10.0;
+                let width = open_btn.left() - 8.0 - text_left;
+                let name = entry.output.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let g = theme::truncated(&painter, &name, theme::bold(13.0), theme::TEXT, width);
+                painter.galley(pos2(text_left, rect.top() + 5.0), g, theme::TEXT);
+                let sub = format!("{} · {:.1}초", entry.engine, entry.elapsed.as_secs_f32());
+                let g = theme::truncated(&painter, &sub, FontId::proportional(11.5), theme::TEXT_FAINT, width);
+                painter.galley(pos2(text_left, rect.top() + 25.0), g, theme::TEXT_FAINT);
+
+                if theme::icon_button(ui, open_btn, ui.scope_id().with(("result-open", i)), Icon::FileText, "TXT 열기", theme::TEXT_DIM)
+                    && let Err(err) = open_file(&entry.output)
                 {
                     error = Some(format!("파일을 열 수 없습니다: {err}"));
                 }
-                if ui.small_button("폴더에서 보기").clicked()
-                    && let Err(err) = reveal_in_folder(output)
+                if theme::icon_button(ui, reveal_btn, ui.scope_id().with(("result-reveal", i)), Icon::Folder, "폴더에서 보기", theme::TEXT_DIM)
+                    && let Err(err) = reveal_in_folder(&entry.output)
                 {
                     error = Some(format!("폴더를 열 수 없습니다: {err}"));
                 }
-                let name = output.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-                ui.label(RichText::new(name).strong()).on_hover_text(output.display().to_string());
-                ui.label(
-                    RichText::new(format!(
-                        "← {} · {} · {:.1}초",
-                        entry.source_name,
-                        entry.engine,
-                        entry.elapsed.as_secs_f32()
-                    ))
-                    .weak(),
-                );
-            });
-        }
+                if response.hovered() {
+                    response.on_hover_text(format!("{}\n원본: {}", entry.output.display(), entry.source_name));
+                }
+            }
+        });
     });
     if clear {
         state.results.clear();
@@ -82,7 +89,7 @@ pub fn open_folder(dir: &Path) -> std::io::Result<()> {
 }
 
 /// 기본 연결 프로그램(메모장 등)으로 연다. 셸(cmd /c start)을 거치지 않는다.
-fn open_file(path: &Path) -> std::io::Result<()> {
+pub fn open_file(path: &Path) -> std::io::Result<()> {
     if !path.is_file() {
         return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "결과 파일이 삭제되었거나 이동되었습니다"));
     }

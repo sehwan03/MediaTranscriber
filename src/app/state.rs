@@ -470,7 +470,11 @@ impl AppState {
             }
         }
         if !self.files.iter().any(Self::is_startable) {
-            return Some("변환할 파일이 없습니다.".to_owned());
+            return Some(if self.has_active_jobs() {
+                "변환이 진행 중입니다. 파일을 더 추가하면 이어서 시작할 수 있습니다.".to_owned()
+            } else {
+                "변환할 파일이 없습니다. 파일을 추가하세요.".to_owned()
+            });
         }
         None
     }

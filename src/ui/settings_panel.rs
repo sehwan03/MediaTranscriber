@@ -2,6 +2,7 @@ use egui::RichText;
 
 use std::sync::atomic::Ordering;
 
+use super::theme::{self, Tone};
 use crate::app::{AppState, FfmpegStatus, KeyCheck, ModelOpKind, StatusLevel};
 use crate::config::settings::ProviderSettings;
 use crate::config::{CloudProvider, EngineMode, Language, WhisperModel};
@@ -11,147 +12,124 @@ use crate::utils::format_bytes;
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        ui.add_space(6.0);
-        ui.heading("음성 인식 설정");
-        ui.add_space(6.0);
-
-        egui::Grid::new("settings_grid")
-            .num_columns(2)
-            .spacing([24.0, 10.0])
-            .show(ui, |ui| {
-                ui.label("기본 실행 모드");
-                egui::ComboBox::from_id_salt("engine_mode")
-                    .selected_text(state.settings.engine_mode.label())
-                    .width(220.0)
-                    .show_ui(ui, |ui| {
-                        for mode in EngineMode::ALL {
-                            ui.selectable_value(&mut state.settings.engine_mode, mode, mode.label());
-                        }
-                    });
-                ui.end_row();
-
-                ui.label("Whisper 모델");
-                ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("whisper_model")
-                        .selected_text(state.settings.whisper_model.label())
-                        .width(220.0)
-                        .show_ui(ui, |ui| {
-                            for model in WhisperModel::ALL {
-                                ui.selectable_value(
-                                    &mut state.settings.whisper_model,
-                                    model,
-                                    model_text(model),
-                                );
-                            }
-                        });
-                    ui.label(RichText::new(model_text(state.settings.whisper_model)).weak());
-                });
-                ui.end_row();
-
-                ui.label("언어");
-                egui::ComboBox::from_id_salt("language")
-                    .selected_text(state.settings.language.label())
-                    .width(220.0)
-                    .show_ui(ui, |ui| {
-                        for lang in Language::ALL {
-                            ui.selectable_value(&mut state.settings.language, lang, lang.label());
-                        }
-                    });
-                ui.end_row();
-
-                ui.label("출력 경로");
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(state.output_dir().display().to_string()).monospace());
-                    if ui.button("변경…").clicked() {
-                        let dialog = rfd::FileDialog::new()
-                            .set_title("출력 폴더 선택")
-                            .set_directory(state.output_dir());
-                        if let Some(dir) = dialog.pick_folder() {
-                            state.settings.output_dir = Some(dir);
-                        }
-                    }
-                    if state.settings.output_dir.is_some() && ui.button("기본값").clicked() {
-                        state.settings.output_dir = None;
-                    }
-                });
-                ui.end_row();
+        // 읽기 편하도록 가운데 정렬된 최대 폭 열
+        let width = ui.available_width().min(860.0);
+        let side = (ui.available_width() - width) / 2.0;
+        ui.horizontal(|ui| {
+            ui.add_space(side);
+            ui.vertical(|ui| {
+                ui.set_width(width);
+                sections(ui, state);
             });
+        });
+    });
+}
 
-        ui.add_space(16.0);
-        ui.heading("Whisper 모델 관리");
-        ui.label(
-            RichText::new("다운로드한 모델은 인터넷 없이 사용할 수 있습니다. 다운로드 후 SHA-256 으로 무결성을 검증합니다.")
-                .weak(),
-        );
-        ui.add_space(6.0);
-        model_manager(ui, state);
+fn label_col(ui: &mut egui::Ui, text: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(140.0, 22.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_width(140.0);
+            ui.label(RichText::new(text).color(theme::TEXT_DIM));
+        },
+    );
+}
 
-        ui.add_space(16.0);
-        ui.heading("FFmpeg");
-        ui.add_space(6.0);
-        crate::ui::ffmpeg_install_banner(ui, state);
-        egui::Grid::new("ffmpeg_grid").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
-            ui.label("상태");
-            match &state.ffmpeg {
-                FfmpegStatus::Searching => {
-                    ui.label("확인 중…");
-                }
-                FfmpegStatus::Found { version } => {
-                    ui.label(format!("사용 가능 (버전 {version})"));
-                }
-                FfmpegStatus::Missing(msg) => {
-                    ui.colored_label(ui.visuals().error_fg_color, msg);
-                }
-            }
+/// 긴 경로는 정해진 폭에서 … 로 자르고, 마우스를 올리면 전체 경로를 보여준다.
+fn path_label(ui: &mut egui::Ui, path: &str, width: f32, color: egui::Color32) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, 22.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_max_width(width);
+            ui.add(egui::Label::new(RichText::new(path).monospace().color(color)).truncate())
+                .on_hover_text(path);
+        },
+    );
+}
+
+fn sections(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.label(RichText::new("설정").font(theme::bold(22.0)).color(theme::TEXT));
+    ui.label(RichText::new("변경 사항은 바로 저장됩니다. API Key 는 설정 파일에 저장되지 않습니다.").color(theme::TEXT_DIM));
+    ui.add_space(12.0);
+
+    theme::card(ui, |ui| {
+        theme::card_title(ui, "기본 설정", None);
+        egui::Grid::new("settings_grid").num_columns(2).spacing([16.0, 12.0]).show(ui, |ui| {
+            label_col(ui, "기본 엔진");
+            let unlocked = !state.has_active_jobs();
+            ui.allocate_ui(egui::vec2(300.0, 30.0), |ui| {
+                theme::segmented(
+                    ui,
+                    &mut state.settings.engine_mode,
+                    &[(EngineMode::Auto, "Auto"), (EngineMode::Local, "Local"), (EngineMode::Cloud, "Cloud")],
+                    unlocked,
+                );
+            });
             ui.end_row();
 
-            ui.label("FFmpeg 폴더");
+            label_col(ui, "Whisper 모델");
+            egui::ComboBox::from_id_salt("whisper_model")
+                .selected_text(model_text(state.settings.whisper_model))
+                .width(300.0)
+                .show_ui(ui, |ui| {
+                    for model in WhisperModel::ALL {
+                        ui.selectable_value(&mut state.settings.whisper_model, model, model_text(model));
+                    }
+                });
+            ui.end_row();
+
+            label_col(ui, "언어");
+            egui::ComboBox::from_id_salt("language")
+                .selected_text(state.settings.language.label())
+                .width(300.0)
+                .show_ui(ui, |ui| {
+                    for lang in Language::ALL {
+                        ui.selectable_value(&mut state.settings.language, lang, lang.label());
+                    }
+                });
+            ui.end_row();
+
+            label_col(ui, "출력 폴더");
             ui.horizontal(|ui| {
-                let text = state
-                    .settings
-                    .ffmpeg_dir
-                    .as_ref()
-                    .map_or_else(|| "자동 탐색".to_owned(), |d| d.display().to_string());
-                ui.label(RichText::new(text).monospace());
-                if ui.button("변경…").clicked()
-                    && let Some(dir) = rfd::FileDialog::new()
-                        .set_title("ffmpeg.exe 와 ffprobe.exe 가 있는 폴더 선택")
-                        .pick_folder()
-                {
-                    state.settings.ffmpeg_dir = Some(dir);
-                    state.ffmpeg_relocate_requested = true;
+                let w = (ui.available_width() - 130.0).max(160.0);
+                path_label(ui, &state.output_dir().display().to_string(), w, theme::TEXT);
+                if ui.small_button("변경").clicked() {
+                    let dialog = rfd::FileDialog::new().set_title("출력 폴더 선택").set_directory(state.output_dir());
+                    if let Some(dir) = dialog.pick_folder() {
+                        state.settings.output_dir = Some(dir);
+                    }
                 }
-                if state.settings.ffmpeg_dir.is_some() && ui.button("자동 탐색").clicked() {
-                    state.settings.ffmpeg_dir = None;
-                    state.ffmpeg_relocate_requested = true;
-                }
-                if ui.button("다시 찾기").clicked() {
-                    state.ffmpeg_relocate_requested = true;
+                if state.settings.output_dir.is_some() && ui.small_button("기본값").clicked() {
+                    state.settings.output_dir = None;
                 }
             });
             ui.end_row();
         });
+    });
+    ui.add_space(12.0);
 
-        ui.add_space(16.0);
-        ui.heading("Cloud 음성 인식");
-        ui.add_space(6.0);
-        ui.label(
-            RichText::new(
-                "본인의 API Key 를 사용합니다. 키는 설정 파일·로그에 기록되지 않으며, \
-                 '이 PC에 기억'을 선택한 경우에만 Windows 자격 증명 관리자에 암호화되어 저장됩니다.",
-            )
-            .weak(),
+    theme::card(ui, |ui| {
+        theme::card_title(
+            ui,
+            "Cloud 음성 인식",
+            Some("본인 API Key 사용 · '이 PC에 기억'을 선택한 경우에만 Windows 자격 증명 관리자에 암호화 저장"),
         );
-        ui.add_space(6.0);
-        egui::Grid::new("cloud_grid").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
-            ui.label("공급자");
-            ui.horizontal(|ui| {
-                for provider in CloudProvider::ALL {
-                    if ui.selectable_value(&mut state.settings.cloud.provider, provider, provider.label()).clicked() {
-                        // 다른 공급자로 바꾸면 입력 중이던 키를 지운다.
-                        state.api_key_input.zeroize();
-                        state.api_key_input.clear();
-                    }
+        egui::Grid::new("cloud_grid").num_columns(2).spacing([16.0, 12.0]).show(ui, |ui| {
+            label_col(ui, "공급자");
+            ui.allocate_ui(egui::vec2(300.0, 30.0), |ui| {
+                let before = state.settings.cloud.provider;
+                theme::segmented(
+                    ui,
+                    &mut state.settings.cloud.provider,
+                    &[(CloudProvider::OpenAi, "OpenAI"), (CloudProvider::Gemini, "Google Gemini")],
+                    true,
+                );
+                if before != state.settings.cloud.provider {
+                    // 다른 공급자로 바꾸면 입력 중이던 키를 지운다.
+                    state.api_key_input.zeroize();
+                    state.api_key_input.clear();
                 }
             });
             ui.end_row();
@@ -159,39 +137,42 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
             let provider = state.settings.cloud.provider;
             if provider == CloudProvider::Gemini {
                 ui.label("");
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    "무료 등급(Unpaid)으로 보낸 음성·결과는 Google 제품 개선에 쓰이고 사람 검토자가 볼 수 있습니다. \
-                     민감한 내용은 Local 모드를 사용하세요.",
+                ui.label(
+                    RichText::new(
+                        "무료 등급(Unpaid)으로 보낸 음성·결과는 Google 제품 개선에 쓰이고 사람 검토자가 볼 수 있습니다. \
+                         민감한 내용은 Local 모드를 사용하세요.",
+                    )
+                    .size(12.5)
+                    .color(theme::WARN),
                 );
                 ui.end_row();
             }
 
-            ui.label("API Key");
+            label_col(ui, "API Key");
             ui.vertical(|ui| api_key_editor(ui, state, provider));
             ui.end_row();
 
             let defaults = ProviderSettings::defaults(provider);
             let current = state.settings.cloud.provider_settings_mut(provider);
-            ui.label("모델");
+            label_col(ui, "모델");
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut current.model).desired_width(220.0));
-                if current.model != defaults.model && ui.button("기본값").clicked() {
+                ui.add(egui::TextEdit::singleline(&mut current.model).desired_width(240.0));
+                if current.model != defaults.model && ui.small_button("기본값").clicked() {
                     current.model = defaults.model.clone();
                 }
             });
             ui.end_row();
 
-            ui.label("API 주소");
+            label_col(ui, "API 주소");
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut current.base_url).desired_width(320.0));
-                if current.base_url != defaults.base_url && ui.button("기본값").clicked() {
+                ui.add(egui::TextEdit::singleline(&mut current.base_url).desired_width(360.0));
+                if current.base_url != defaults.base_url && ui.small_button("기본값").clicked() {
                     current.base_url = defaults.base_url.clone();
                 }
             });
             ui.end_row();
 
-            ui.label("업로드 구간 길이");
+            label_col(ui, "업로드 구간 길이");
             ui.horizontal(|ui| {
                 ui.add(
                     egui::DragValue::new(&mut state.settings.cloud.chunk_seconds)
@@ -199,21 +180,95 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                         .speed(10)
                         .suffix(" 초"),
                 );
-                ui.label(RichText::new("긴 파일은 이 길이로 나눠 업로드합니다").weak());
+                ui.label(RichText::new("긴 파일은 이 길이로 나눠 업로드합니다").size(12.5).color(theme::TEXT_FAINT));
             });
             ui.end_row();
         });
+    });
+    ui.add_space(12.0);
 
-        ui.add_space(16.0);
-        ui.heading("시스템 정보");
-        ui.add_space(6.0);
+    theme::card(ui, |ui| {
+        theme::card_title(
+            ui,
+            "Whisper 모델",
+            Some("다운로드한 모델은 인터넷 없이 사용할 수 있습니다 · 다운로드 후 SHA-256 으로 무결성 검증"),
+        );
+        model_manager(ui, state);
+    });
+    ui.add_space(12.0);
+
+    theme::card(ui, |ui| {
+        theme::card_title(ui, "FFmpeg", Some("동영상·음성 파일을 읽는 데 필요합니다"));
+        crate::ui::ffmpeg_install_banner(ui, state);
+        egui::Grid::new("ffmpeg_grid").num_columns(2).spacing([16.0, 12.0]).show(ui, |ui| {
+            label_col(ui, "상태");
+            match &state.ffmpeg {
+                FfmpegStatus::Searching => {
+                    theme::pill(ui, "확인 중", Tone::Neutral);
+                }
+                FfmpegStatus::Found { version } => {
+                    theme::pill(ui, &format!("사용 가능 · {version}"), Tone::Success);
+                }
+                FfmpegStatus::Missing(msg) => {
+                    theme::pill(ui, "없음", Tone::Warn).on_hover_text(msg);
+                }
+            }
+            ui.end_row();
+
+            label_col(ui, "FFmpeg 폴더");
+            ui.horizontal(|ui| {
+                let text = state
+                    .settings
+                    .ffmpeg_dir
+                    .as_ref()
+                    .map_or_else(|| "자동 탐색".to_owned(), |d| d.display().to_string());
+                let w = (ui.available_width() - 220.0).max(120.0);
+                path_label(ui, &text, w, theme::TEXT);
+                if ui.small_button("변경").clicked()
+                    && let Some(dir) = rfd::FileDialog::new()
+                        .set_title("ffmpeg.exe 와 ffprobe.exe 가 있는 폴더 선택")
+                        .pick_folder()
+                {
+                    state.settings.ffmpeg_dir = Some(dir);
+                    state.ffmpeg_relocate_requested = true;
+                }
+                if state.settings.ffmpeg_dir.is_some() && ui.small_button("자동 탐색").clicked() {
+                    state.settings.ffmpeg_dir = None;
+                    state.ffmpeg_relocate_requested = true;
+                }
+                if ui.small_button("다시 찾기").clicked() {
+                    state.ffmpeg_relocate_requested = true;
+                }
+            });
+            ui.end_row();
+        });
+    });
+    ui.add_space(12.0);
+
+    theme::card(ui, |ui| {
+        theme::card_title(ui, "시스템 정보", Some("Auto 모드가 엔진을 고를 때 사용합니다"));
         system_info(ui, state);
+    });
+    ui.add_space(12.0);
 
-        ui.add_space(16.0);
-        ui.heading("저장 위치");
-        ui.add_space(6.0);
+    theme::card(ui, |ui| {
+        theme::card_title(ui, "저장 위치", Some("오류가 생기면 로그 폴더의 기록을 확인하세요 (API Key·인식 텍스트는 기록되지 않음)"));
+        egui::Grid::new("paths_grid").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+            for (name, path) in [
+                ("설정 파일", &state.paths.settings_file),
+                ("로그 폴더", &state.paths.log_dir),
+                ("모델 폴더", &state.paths.models_dir),
+                ("FFmpeg 자동 설치", &state.paths.ffmpeg_dir),
+            ] {
+                label_col(ui, name);
+                let w = ui.available_width().max(160.0);
+                path_label(ui, &path.display().to_string(), w, theme::TEXT_DIM);
+                ui.end_row();
+            }
+        });
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.button("로그 폴더 열기").on_hover_text("오류가 생기면 이 폴더의 로그를 확인하세요. (API Key·인식 텍스트는 기록되지 않음)").clicked()
+            if ui.button("로그 폴더 열기").clicked()
                 && let Err(err) = crate::ui::result_panel::open_folder(&state.paths.log_dir)
             {
                 state.set_status(StatusLevel::Error, format!("로그 폴더를 열 수 없습니다: {err}"));
@@ -224,20 +279,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 state.set_status(StatusLevel::Error, format!("모델 폴더를 열 수 없습니다: {err}"));
             }
         });
-        ui.add_space(4.0);
-        egui::Grid::new("paths_grid").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
-            for (name, path) in [
-                ("설정 파일", &state.paths.settings_file),
-                ("로그 폴더", &state.paths.log_dir),
-                ("모델 폴더", &state.paths.models_dir),
-                ("FFmpeg 자동 설치 폴더", &state.paths.ffmpeg_dir),
-            ] {
-                ui.label(name);
-                ui.label(RichText::new(path.display().to_string()).monospace().weak());
-                ui.end_row();
-            }
-        });
     });
+    ui.add_space(20.0);
 }
 
 fn model_text(model: WhisperModel) -> String {
@@ -424,16 +467,16 @@ fn model_manager(ui: &mut egui::Ui, state: &mut AppState) {
             let file_state = state.model_file_state(model);
             match file_state {
                 ModelFileState::Installed if state.verified_models.contains(&model) => {
-                    ui.label("설치됨 (검증 완료)");
+                    theme::pill(ui, "설치됨 · 검증 완료", Tone::Success);
                 }
                 ModelFileState::Installed => {
-                    ui.label("설치됨");
+                    theme::pill(ui, "설치됨", Tone::Success);
                 }
                 ModelFileState::Missing => {
-                    ui.label(RichText::new("미설치").weak());
+                    theme::pill(ui, "미설치", Tone::Neutral);
                 }
                 ModelFileState::Corrupted => {
-                    ui.colored_label(ui.visuals().error_fg_color, "손상됨 (크기 불일치)");
+                    theme::pill(ui, "손상됨 (크기 불일치)", Tone::Danger);
                 }
             }
 

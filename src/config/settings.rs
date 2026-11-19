@@ -14,17 +14,6 @@ pub enum EngineMode {
     Cloud,
 }
 
-impl EngineMode {
-    pub const ALL: [Self; 3] = [Self::Auto, Self::Local, Self::Cloud];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Auto => "Auto (자동 추천)",
-            Self::Local => "Local (내 PC)",
-            Self::Cloud => "Cloud (인터넷)",
-        }
-    }
-}
 
 /// 로컬 Whisper 모델 (whisper.cpp ggml 형식).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]

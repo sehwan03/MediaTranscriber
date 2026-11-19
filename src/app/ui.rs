@@ -3,8 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use egui::{FontData, FontFamily, RichText};
-use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
+use egui::RichText;
 
 use super::state::{AppState, FfmpegStatus, KeyCheck, ModelOp, ModelOpKind, StatusLevel, View};
 use crate::config::secret;
@@ -16,6 +15,7 @@ use crate::speech::model_worker::ModelWorker;
 use crate::system::SystemProfile;
 use crate::task::{BenchmarkJob, TaskManager};
 use crate::ui;
+use crate::ui::theme;
 
 /// eframe 애플리케이션 루트.
 pub struct MediaTranscriberApp {
@@ -42,9 +42,9 @@ enum InstallEvent {
 
 impl MediaTranscriberApp {
     pub fn new(cc: &eframe::CreationContext<'_>, paths: AppPaths, settings: Settings) -> Self {
-        cc.egui_ctx.set_theme(egui::Theme::Dark);
+        theme::apply(&cc.egui_ctx);
         let mut state = AppState::new(paths, settings);
-        if !install_korean_font(&cc.egui_ctx) {
+        if !theme::install_fonts(&cc.egui_ctx) {
             state.set_status(
                 StatusLevel::Warning,
                 "한글 글꼴(맑은 고딕)을 찾지 못해 한글이 표시되지 않을 수 있습니다.",
@@ -317,26 +317,40 @@ impl eframe::App for MediaTranscriberApp {
         self.sync_media_worker();
         self.sync_workers();
 
-        egui::Panel::top("header").show(ui, |ui| header(ui, &mut self.state));
-        egui::Panel::bottom("status_bar").show(ui, |ui| status_bar(ui, &self.state));
+        let bar = |x: i8, y: i8| egui::Frame::new().fill(theme::HEADER).inner_margin(egui::Margin::symmetric(x, y));
+        egui::Panel::top("header")
+            .frame(bar(20, 12))
+            .show_separator_line(false)
+            .show(ui, |ui| header(ui, &mut self.state));
+        egui::Panel::bottom("status_bar")
+            .frame(bar(20, 6))
+            .show_separator_line(false)
+            .show(ui, |ui| status_bar(ui, &self.state));
 
         match self.state.view {
             View::Main => {
-                egui::Panel::left("file_panel")
-                    .resizable(true)
-                    .default_size(340.0)
-                    .min_size(260.0)
-                    .show(ui, |ui| ui::file_panel::show(ui, &mut self.state));
-                egui::Panel::bottom("result_panel")
-                    .resizable(true)
-                    .default_size(150.0)
-                    .min_size(100.0)
-                    .show(ui, |ui| ui::result_panel::show(ui, &mut self.state));
+                egui::Panel::right("side_panel")
+                    .resizable(false)
+                    .exact_size(372.0)
+                    .show_separator_line(false)
+                    .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin { left: 8, right: 20, top: 16, bottom: 12 }))
+                    .show(ui, |ui| {
+                        egui::Panel::bottom("side_footer")
+                            .frame(egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 0, top: 12, bottom: 0 }))
+                            .show_separator_line(false)
+                            .resizable(false)
+                            .show(ui, |ui| ui::task_panel::show_footer(ui, &mut self.state));
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| ui::task_panel::show(ui, &mut self.state));
+                    });
                 egui::CentralPanel::default()
-                    .show(ui, |ui| ui::task_panel::show(ui, &mut self.state));
+                    .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin { left: 20, right: 8, top: 16, bottom: 12 }))
+                    .show(ui, |ui| ui::file_panel::show(ui, &mut self.state));
             }
             View::Settings => {
                 egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin::symmetric(20, 16)))
                     .show(ui, |ui| ui::settings_panel::show(ui, &mut self.state));
             }
         }
@@ -372,8 +386,8 @@ fn consent_dialog(ctx: &egui::Context, state: &mut AppState) {
     let Some((count, total)) = state.consent_pending else { return };
     let mut decision: Option<bool> = None;
     let response = egui::Modal::new(egui::Id::unique("cloud_consent")).show(ctx, |ui| {
-        ui.set_max_width(460.0);
-        ui.heading("Cloud 전송 동의");
+        ui.set_max_width(480.0);
+        ui.label(RichText::new("Cloud 전송 동의").font(theme::bold(18.0)).color(theme::TEXT));
         ui.add_space(8.0);
         let provider = state.settings.cloud.provider;
         let name = provider.label();
@@ -408,12 +422,12 @@ fn consent_dialog(ctx: &egui::Context, state: &mut AppState) {
         ui.checkbox(&mut state.consent_checked, "위 내용을 확인했으며 전송에 동의합니다");
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.button("취소").clicked() {
+            if ui.add(egui::Button::new("취소").min_size(egui::vec2(96.0, 36.0))).clicked() {
                 decision = Some(false);
             }
             let send = ui.add_enabled(
                 state.consent_checked,
-                egui::Button::new(RichText::new("동의하고 전송").strong()),
+                theme::primary_button("동의하고 전송").min_size(egui::vec2(160.0, 36.0)),
             );
             if send.clicked() && state.consent_checked {
                 decision = Some(true);
@@ -442,87 +456,82 @@ fn consent_dialog(ctx: &egui::Context, state: &mut AppState) {
 }
 
 fn header(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.heading(RichText::new(crate::APP_NAME).strong());
-        ui.label(RichText::new(format!("v{}", crate::APP_VERSION)).weak());
-        ui.separator();
-        ui.selectable_value(&mut state.view, View::Main, "변환");
-        ui.selectable_value(&mut state.view, View::Settings, "설정");
+        // 로고 + 이름
+        let (logo, _) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
+        ui.painter().rect_filled(logo, egui::CornerRadius::same(9), theme::ACCENT);
+        theme::paint_icon(ui.painter(), logo.shrink(7.0), theme::Icon::Wave, egui::Color32::WHITE);
+        ui.add_space(4.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(crate::APP_NAME).font(theme::bold(17.0)).color(theme::TEXT));
+                ui.label(RichText::new(format!("v{}", crate::APP_VERSION)).size(11.5).color(theme::TEXT_FAINT));
+            });
+            ui.label(RichText::new("음성·동영상 텍스트 변환").size(12.0).color(theme::TEXT_DIM));
+        });
+        ui.add_space(24.0);
+
+        // 화면 전환 탭
+        let tabs_width = 200.0;
+        ui.allocate_ui(egui::vec2(tabs_width, 32.0), |ui| {
+            ui.set_width(tabs_width);
+            theme::segmented(ui, &mut state.view, &[(View::Main, "변환"), (View::Settings, "설정")], true);
+        });
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            match &state.ffmpeg {
-                FfmpegStatus::Searching => {
-                    ui.label(RichText::new("FFmpeg 확인 중…").weak());
-                }
-                FfmpegStatus::Found { version } => {
-                    ui.label(RichText::new(format!("FFmpeg {version}")).weak());
-                }
-                FfmpegStatus::Missing(msg) => {
-                    ui.colored_label(ui.visuals().error_fg_color, "FFmpeg 없음").on_hover_text(msg);
+            // 전체 상태 배지
+            let active = state.files.iter().filter(|f| f.job.is_active()).count();
+            if active > 0 {
+                theme::pill(ui, &format!("처리 중 {active}"), theme::Tone::Info);
+            } else if state.ffmpeg_install.is_some() {
+                theme::pill(ui, "FFmpeg 설치 중", theme::Tone::Info);
+            } else {
+                match &state.ffmpeg {
+                    FfmpegStatus::Searching => {
+                        theme::pill(ui, "준비 중", theme::Tone::Neutral);
+                    }
+                    FfmpegStatus::Missing(msg) => {
+                        theme::pill(ui, "FFmpeg 필요", theme::Tone::Warn).on_hover_text(msg);
+                    }
+                    FfmpegStatus::Found { .. } => {
+                        theme::pill(ui, "준비됨", theme::Tone::Success);
+                    }
                 }
             }
-            ui.label(RichText::new("·").weak());
-            let hw = match &state.system {
-                Some(p) => format!(
-                    "CPU {}스레드 · RAM {:.1} GB 사용 가능",
-                    p.logical_cores,
-                    p.available_ram as f64 / (1024.0 * 1024.0 * 1024.0)
-                ),
-                None => format!("CPU {}스레드", state.logical_cores),
-            };
-            ui.label(RichText::new(format!("모드: {}  ·  {hw}", state.settings.engine_mode.label())).weak());
+            ui.add_space(8.0);
+            let mut info = Vec::new();
+            if let FfmpegStatus::Found { version } = &state.ffmpeg {
+                info.push(format!("FFmpeg {version}"));
+            }
+            match &state.system {
+                Some(p) => {
+                    info.push(format!("CPU {}스레드", p.logical_cores));
+                    info.push(format!("RAM {:.1} GB 여유", p.available_ram as f64 / (1024.0 * 1024.0 * 1024.0)));
+                }
+                None => info.push(format!("CPU {}스레드", state.logical_cores)),
+            }
+            ui.label(RichText::new(info.join("  ·  ")).size(12.0).color(theme::TEXT_FAINT));
         });
     });
-    ui.add_space(4.0);
 }
 
 fn status_bar(ui: &mut egui::Ui, state: &AppState) {
-    ui.horizontal(|ui| match &state.status {
-        Some(msg) => {
-            let color = match msg.level {
-                StatusLevel::Info => ui.visuals().text_color(),
-                StatusLevel::Warning => ui.visuals().warn_fg_color,
-                StatusLevel::Error => ui.visuals().error_fg_color,
-            };
-            ui.colored_label(color, &msg.text);
-        }
-        None => {
-            ui.label(RichText::new("준비").weak());
-        }
+    ui.horizontal(|ui| {
+        let (text, color) = match &state.status {
+            Some(msg) => (
+                msg.text.as_str(),
+                match msg.level {
+                    StatusLevel::Info => theme::TEXT_DIM,
+                    StatusLevel::Warning => theme::WARN,
+                    StatusLevel::Error => theme::DANGER,
+                },
+            ),
+            None => ("준비", theme::TEXT_FAINT),
+        };
+        let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+        ui.painter().circle_filled(dot.center(), 3.5, color);
+        ui.label(RichText::new(text).size(12.5).color(color));
     });
 }
 
-/// Windows 시스템 한글 글꼴을 fallback 으로 등록한다.
-/// egui 기본 글꼴에는 한글 글리프가 없기 때문에 필요하다.
-fn install_korean_font(ctx: &egui::Context) -> bool {
-    let fonts_dir = std::env::var_os("WINDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("Fonts");
-
-    // (파일명, TTC 인덱스)
-    const CANDIDATES: [(&str, u32); 3] = [("malgun.ttf", 0), ("gulim.ttc", 0), ("batang.ttc", 0)];
-
-    for (file, index) in CANDIDATES {
-        let path = fonts_dir.join(file);
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let mut data = FontData::from_owned(bytes);
-        data.index = index;
-        ctx.add_font(FontInsert {
-            name: format!("korean-{file}"),
-            data,
-            families: vec![
-                InsertFontFamily { family: FontFamily::Proportional, priority: FontPriority::Lowest },
-                InsertFontFamily { family: FontFamily::Monospace, priority: FontPriority::Lowest },
-            ],
-        });
-        tracing::info!(font = file, "한글 글꼴 등록");
-        return true;
-    }
-    tracing::warn!(dir = %fonts_dir.display(), "한글 글꼴을 찾지 못함");
-    false
-}

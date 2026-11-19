@@ -5,6 +5,7 @@ pub mod file_panel;
 pub mod result_panel;
 pub mod settings_panel;
 pub mod task_panel;
+pub mod theme;
 
 use egui::RichText;
 

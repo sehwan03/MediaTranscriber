@@ -172,12 +172,36 @@ fn short_version(first_line: &str) -> String {
 /// stderr 의 마지막 몇 줄을 사용자 표시용으로 요약한다.
 pub(super) fn stderr_summary(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let mut lines: Vec<String> = Vec::new();
+    for line in text.lines().map(clean_ffmpeg_line).filter(|l| !l.is_empty()) {
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
     if lines.is_empty() {
         return "알 수 없는 오류".to_owned();
     }
     let start = lines.len().saturating_sub(3);
     lines[start..].join(" / ")
+}
+
+/// 사용자에게 의미 없는 부분을 걷어 낸다.
+/// - `[mp3 @ 000001d25d773640] ` 같은 내부 구성 요소·주소 접두어
+/// - `C:\...\파일.mp3: ` 같은 입력 경로 접두어 (파일명은 화면에 이미 보인다)
+fn clean_ffmpeg_line(line: &str) -> String {
+    let mut l = line.trim();
+    while let Some(rest) = l.strip_prefix('[') {
+        match rest.split_once("] ") {
+            Some((tag, after)) if tag.contains(" @ ") => l = after.trim(),
+            _ => break,
+        }
+    }
+    if (l.contains('\\') || l.contains('/'))
+        && let Some((_, msg)) = l.rsplit_once(": ")
+    {
+        l = msg.trim();
+    }
+    l.to_owned()
 }
 
 #[derive(Deserialize)]
@@ -274,5 +298,17 @@ mod tests {
     fn stderr_summary_keeps_last_lines() {
         assert_eq!(stderr_summary(b""), "알 수 없는 오류");
         assert_eq!(stderr_summary(b"a\n\nb\nc\nd\n"), "b / c / d");
+    }
+
+    #[test]
+    fn ffmpeg_noise_is_removed() {
+        let raw = "[mp3 @ 000001d25d773640] Failed to find two consecutive MPEG audio frames.\n\
+                   C:\\Users\\me\\gui mix\\fake.mp3: Invalid data found when processing input\n";
+        assert_eq!(
+            stderr_summary(raw.as_bytes()),
+            "Failed to find two consecutive MPEG audio frames. / Invalid data found when processing input"
+        );
+        assert_eq!(clean_ffmpeg_line("[in#0 @ 0x1] [mp3 @ 0x2] bad"), "bad");
+        assert_eq!(clean_ffmpeg_line("[abc] keep"), "[abc] keep");
     }
 }
