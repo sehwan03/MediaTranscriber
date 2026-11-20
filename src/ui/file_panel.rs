@@ -6,21 +6,38 @@
 use egui::{Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke, pos2, vec2};
 
 use super::theme::{self, Icon, Tone};
-use crate::app::{AppState, JobState, ProbeState, StatusLevel};
+use crate::app::{AppState, InputMode, JobState, ProbeState, StatusLevel};
 use crate::media::format_duration;
 use crate::utils::format_bytes;
 
 const ROW_H: f32 = 58.0;
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
+    mode_switch(ui, state);
+    if state.input_mode == InputMode::Url {
+        super::url_panel::show(ui, state);
+        return;
+    }
     drop_zone(ui, state);
     if state.files.is_empty() {
         return; // 비어 있으면 큰 끌어다 놓기 영역 자체가 안내 화면
     }
     ui.add_space(14.0);
+    show_list(ui, state);
+}
+
+/// 작업 목록 (파일 · URL 영상 공통)
+pub fn show_list(ui: &mut egui::Ui, state: &mut AppState) {
     list_header(ui, state);
     ui.add_space(6.0);
     file_list(ui, state);
+}
+
+fn mode_switch(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.allocate_ui(vec2(ui.available_width().min(300.0), 32.0), |ui| {
+        theme::segmented(ui, &mut state.input_mode, &[(InputMode::Url, "URL 변환"), (InputMode::Files, "파일 변환")], true);
+    });
+    ui.add_space(12.0);
 }
 
 // ---------------------------------------------------------------- 끌어다 놓기 영역
@@ -357,7 +374,11 @@ fn file_row(ui: &mut egui::Ui, state: &AppState, index: usize, current_engine: &
                 ProbeState::Pending => parts.push("미디어 정보 확인 중".to_owned()),
                 ProbeState::Failed(_) => {}
             }
-            parts.push(format_bytes(file.size_bytes));
+            if file.url.is_some() {
+                parts.push("URL".to_owned());
+            } else {
+                parts.push(format_bytes(file.size_bytes));
+            }
             let engine = match (&file.job, &file.engine_label) {
                 (JobState::Idle, _) | (_, None) => current_engine.to_owned(),
                 (_, Some(label)) => label.clone(),
@@ -389,14 +410,19 @@ fn file_row(ui: &mut egui::Ui, state: &AppState, index: usize, current_engine: &
 
     // 마우스를 올리면 전체 경로와 오류 내용을 보여준다
     if response.hovered() {
+        // URL 은 토큰이 붙어 있을 수 있으므로 쿼리를 지운 주소만 보여준다
+        let source = match &file.url {
+            Some(v) => format!("{}\n{}", file.display_name, crate::url::safety::redact_url(&v.source_url)),
+            None => file.path.display().to_string(),
+        };
         let detail = match (&file.probe, &file.job) {
-            (ProbeState::Failed(msg), _) | (_, JobState::Failed(msg)) => format!("{}\n\n{msg}", file.path.display()),
-            (_, JobState::Completed { output, .. }) => format!("{}\n→ {}", file.path.display(), output.display()),
+            (ProbeState::Failed(msg), _) | (_, JobState::Failed(msg)) => format!("{source}\n\n{msg}"),
+            (_, JobState::Completed { output, .. }) => format!("{source}\n→ {}", output.display()),
             (ProbeState::Ready(info), _) => {
                 let kind = if info.has_video { "동영상" } else { "음성" };
-                format!("{}\n{kind} · {} · 오디오 {}", file.path.display(), info.format_name, info.audio.codec)
+                format!("{source}\n{kind} · {} · 오디오 {}", info.format_name, info.audio.codec)
             }
-            _ => file.path.display().to_string(),
+            _ => source,
         };
         response.on_hover_text(detail);
     }

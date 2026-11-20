@@ -8,6 +8,10 @@ Rust + egui 로 만들었고, **내 PC에서(Local)** 또는 **인터넷 서비�
 ## 주요 기능
 
 - **입력**: MP4 · MKV · AVI · MOV · WEBM · MP3 · WAV · M4A · FLAC · AAC · OGG (확장자가 아니라 실제 내용을 검사)
+- **URL 변환**: 강의·영상 페이지 · m3u8(HLS) · MP4 직접 주소 등 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 지원 사이트에서
+  영상을 찾아 목록으로 보여주고, **사용자가 고른 영상만** 오디오를 받아 변환 (영상 전체를 저장하지 않음).
+  yt-dlp 가 모르는 대학 강의 플레이어(Xinics 커먼즈) 페이지도 플레이어 설정에서 영상을 찾아 처리
+- **영상 다운로드** (선택 기능, 설정에서 켜기): URL 변환에서 고른 영상을 최고 화질(가장 좋은 영상 + 가장 좋은 소리, 재인코딩 없음)로 mp4 또는 mkv 저장
 - **Local**: [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 기반, 인터넷 없이 동작 (모델 Tiny / Base / Small / Medium)
 - **Cloud**: OpenAI (`gpt-transcribe` 등) 또는 Google Gemini (`gemini-3.5-flash-lite` 등), 본인 API Key 사용
 - **Auto**: PC 성능(CPU·RAM·GPU·디스크)과 실제 측정 속도를 바탕으로 Local / Cloud 와 모델을 추천
@@ -22,11 +26,12 @@ Rust + egui 로 만들었고, **내 PC에서(Local)** 또는 **인터넷 서비�
 2. 처음 실행하면 필요한 구성 요소를 안내합니다.
    - **FFmpeg**: 「FFmpeg 자동 설치」 (약 170 MB, LGPL 빌드, SHA-256 검증 후 앱 데이터 폴더에 설치)
    - **Whisper 모델**: 설정 → 모델 관리에서 다운로드 (Base 148 MB 권장, SHA-256 검증)
+   - **yt-dlp** (URL 변환을 쓸 때만): URL 변환 화면의 「설치」 또는 설정 → URL 변환 구성 요소 (약 23 MB, 공식 릴리스, SHA-256 검증)
 
 설치 프로그램 무결성은 Releases 의 `SHA256SUMS.txt` 와 비교해 확인할 수 있습니다.
 
 ```powershell
-Get-FileHash .\MediaTranscriber-Setup-0.1.0.exe -Algorithm SHA256
+Get-FileHash .\MediaTranscriber-Setup-0.2.0.exe -Algorithm SHA256
 ```
 
 ## 사용법
@@ -34,6 +39,20 @@ Get-FileHash .\MediaTranscriber-Setup-0.1.0.exe -Algorithm SHA256
 1. 「파일 선택」·「폴더 선택」 또는 창으로 끌어다 놓기
 2. 모드(Auto / Local / Cloud)·모델·언어 선택
 3. 「변환 시작」 → 완료되면 결과 영역에서 「열기」·「폴더에서 보기」
+
+### URL 변환
+
+1. 「URL 변환」(기본 화면)에서 영상 주소(강의 페이지 · `.m3u8` · `.mp4` 등)를 입력 → 「영상 찾기」
+2. 로그인이 필요한 페이지는 **로그인**을 지정합니다.
+   - 「브라우저」: 브라우저(Edge · Chrome · Firefox · Whale · Brave)에 로그인된 세션을 yt-dlp 가 직접 읽습니다.
+     Chrome·Edge 는 실행 중이면 쿠키를 읽지 못할 수 있으니 브라우저를 닫고 시도하거나 Firefox 를 사용하세요.
+   - 「쿠키 파일」: 확장 프로그램 등으로 내보낸 Netscape 형식 cookies.txt
+3. 찾은 영상(제목 · 길이 · 형식 · 해상도)에서 변환할 영상을 체크 → 「선택한 영상 변환」
+   (여러 개가 나와도 자동으로 고르거나 변환하지 않습니다)
+4. 오디오만 받아 16 kHz mono WAV 로 바꾼 뒤 기존 Local / Cloud 인식으로 변환하고, TXT 이름은 영상 제목을 씁니다.
+   임시 오디오는 성공 · 실패 · 취소 · 종료 시 모두 지워집니다.
+
+본인에게 접근 권한이 있는 영상에만 사용하세요. DRM 으로 보호된 영상은 처리하지 않으며 접근 제한을 우회하지 않습니다.
 
 ## 개인정보와 보안
 
@@ -46,13 +65,16 @@ Get-FileHash .\MediaTranscriber-Setup-0.1.0.exe -Algorithm SHA256
   또한 무료 등급은 EEA·영국·스위스 사용자 대상 서비스에 사용할 수 없습니다
   ([약관](https://ai.google.dev/gemini-api/terms)). 민감한 내용은 Local 모드를 사용하세요.
 - 로그에는 API Key 와 인식 텍스트를 남기지 않습니다.
+- **URL 변환**: 쿠키·로그인 정보는 앱이 읽거나 저장하지 않습니다 (브라우저 이름 또는 cookies.txt **경로**만 설정에 저장하고 yt-dlp 에 넘김).
+  로그 · 오류 메시지의 주소는 `?` 뒤(토큰·서명)를 지워 기록합니다. 외부 프로그램은 셸 없이 인자를 분리해 실행하고,
+  주소는 항상 `--` 뒤에 두어 옵션으로 해석될 수 없게 합니다. http/https 주소만 받습니다.
 
 ## 데이터 위치
 
 | 항목 | 경로 |
 |---|---|
 | 설정 | `%APPDATA%\MediaTranscriber\config\settings.json` |
-| 모델 · FFmpeg · 로그 | `%LOCALAPPDATA%\MediaTranscriber\data\` |
+| 모델 · FFmpeg · yt-dlp · 로그 · 임시 오디오 | `%LOCALAPPDATA%\MediaTranscriber\data\` |
 | 기본 출력 폴더 | `문서\MediaTranscriber` |
 
 문제가 생기면 설정 → 「로그 폴더 열기」의 로그(최근 14일)를 확인하세요.
@@ -90,9 +112,10 @@ src/
 ├── speech/          Local(whisper) · Cloud(OpenAI/Gemini) 엔진, 모델 관리
 ├── engine_selector/ Auto 모드 성능 분석과 추천
 ├── system/          CPU · RAM · GPU · 디스크 정보
-├── task/            작업 관리자 (Local 1개 / Cloud N개 동시 처리)
+├── task/            작업 관리자 (Local 1개 / Cloud N개 동시 처리), 파일·URL 입력 준비
+├── url/             URL 변환: yt-dlp 탐색 · 오디오 추출 · 자동 설치 · 주소 검증/가리기
 ├── output/          TXT 저장
-└── utils/           오류 · 로그
+└── utils/           오류 · 로그 · 임시 파일 가드
 ```
 
 ## 라이선스
@@ -105,3 +128,4 @@ src/
 별도로 밝히지 않는 한, 이 프로젝트에 기여한 내용은 위와 같은 이중 라이선스로 제공되는 것으로 간주합니다.
 
 사용한 오픈 소스 구성 요소는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 를 참고하세요.
+URL 변환이 지원하는 영상 출처와 한계는 [docs/url-sources.md](docs/url-sources.md) 에 정리되어 있습니다.

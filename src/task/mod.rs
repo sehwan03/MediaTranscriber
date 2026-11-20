@@ -5,14 +5,17 @@
 //! - `queue`  : Cloud 대기열 (설정된 동시 요청 수만큼 병렬)
 //! - `job`    : 작업·이벤트 타입
 
+mod input;
 mod job;
 mod manager;
 mod queue;
 mod worker;
 
-pub use job::{BenchmarkJob, JobEngine, Stage, TaskEvent, TranscribeJob};
+pub use job::{BenchmarkJob, JobEngine, Stage, TaskEvent, TranscribeJob, UrlJob};
 pub use manager::TaskManager;
 pub use worker::LOCAL_CHUNK_THRESHOLD;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
+#[cfg(test)]
+mod url_tests;

@@ -1,14 +1,14 @@
 ﻿; MediaTranscriber 설치 프로그램 (Inno Setup 6)
 ;
 ; 빌드: scripts\build-release.ps1 (cargo release 빌드 후 ISCC 실행)
-; 직접:  ISCC.exe /DMyAppVersion=0.1.0 installer\MediaTranscriber.iss
+; 직접:  ISCC.exe /DMyAppVersion=0.2.0 installer\MediaTranscriber.iss
 ;
 ; - 기본은 현재 사용자용 설치 (관리자 권한 불필요, %LOCALAPPDATA%\Programs\MediaTranscriber)
 ; - FFmpeg 와 Whisper 모델은 포함하지 않는다. 앱이 처음 실행될 때 필요 시 내려받는다.
 ; - 제거 시 사용자 데이터(모델·FFmpeg·로그·설정·저장된 API Key)를 지울지 묻는다.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0"
+  #define MyAppVersion "0.2.0"
 #endif
 #define MyAppName "MediaTranscriber"
 #define MyAppExeName "MediaTranscriber.exe"

@@ -19,6 +19,10 @@ pub struct AppPaths {
     pub models_dir: PathBuf,
     /// 앱이 자동 설치한 FFmpeg 폴더
     pub ffmpeg_dir: PathBuf,
+    /// 앱이 자동 설치한 yt-dlp 폴더
+    pub ytdlp_dir: PathBuf,
+    /// URL 변환용 임시 오디오 폴더 (작업 후 자동 삭제)
+    pub temp_dir: PathBuf,
     /// 출력 경로를 지정하지 않았을 때 사용할 기본 위치 (문서\MediaTranscriber)
     pub default_output_dir: PathBuf,
 }
@@ -35,6 +39,8 @@ impl AppPaths {
             log_dir: dirs.data_local_dir().join("logs"),
             models_dir: dirs.data_local_dir().join("models"),
             ffmpeg_dir: dirs.data_local_dir().join("ffmpeg"),
+            ytdlp_dir: dirs.data_local_dir().join("yt-dlp"),
+            temp_dir: dirs.data_local_dir().join("tmp"),
             default_output_dir,
         })
     }

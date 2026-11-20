@@ -2,6 +2,7 @@
 //! 무거운 작업(FFmpeg, 추론, HTTP)은 절대 여기서 수행하지 않는다.
 
 pub mod file_panel;
+pub mod url_panel;
 pub mod result_panel;
 pub mod settings_panel;
 pub mod task_panel;

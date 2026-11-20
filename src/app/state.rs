@@ -12,7 +12,8 @@ use crate::speech::model_worker::ModelEvent;
 use crate::config::secret::{self, ApiKey};
 use crate::engine_selector::{Choice, Recommendation, SelectorInput, recommend};
 use crate::system::SystemProfile;
-use crate::task::{JobEngine, Stage, TaskEvent, TranscribeJob};
+use crate::task::{JobEngine, Stage, TaskEvent, TranscribeJob, UrlJob};
+use crate::url::UrlVideo;
 use zeroize::Zeroize;
 
 /// 확장자 기반 1차 필터. 실제 미디어 유효성은 등록 후 ffprobe 로 다시 검사한다.
@@ -41,6 +42,85 @@ pub struct InputFile {
     pub job: JobState,
     /// 작업에 실제 사용된 엔진 (작업 시작 시 기록)
     pub engine_label: Option<String>,
+    /// URL 에서 고른 영상이면 Some (파일이 아님)
+    pub url: Option<UrlVideo>,
+}
+
+/// 영상 받기 상태
+#[derive(Debug, Clone)]
+pub enum DownloadState {
+    Queued,
+    Running { progress: f32, merging: bool },
+    Done(PathBuf),
+    Failed(String),
+    Cancelled,
+}
+
+/// 영상 받기 목록의 항목
+#[derive(Debug, Clone)]
+pub struct DownloadItem {
+    pub id: u64,
+    pub title: String,
+    pub state: DownloadState,
+    pub cancel: Arc<AtomicBool>,
+}
+
+impl DownloadItem {
+    pub fn is_active(&self) -> bool {
+        matches!(self.state, DownloadState::Queued | DownloadState::Running { .. })
+    }
+}
+
+/// 받기 작업 스레드로 보낼 요청
+pub struct DownloadRequest {
+    pub id: u64,
+    pub video: UrlVideo,
+    pub cancel: Arc<AtomicBool>,
+}
+
+/// 메인 화면의 입력 방식
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    Files,
+    Url,
+}
+
+/// 외부 도구(yt-dlp) 상태
+#[derive(Debug, Clone)]
+pub enum ToolStatus {
+    Unknown,
+    Checking,
+    Found { version: String },
+    Missing(String),
+}
+
+/// URL 탐색 상태
+pub enum Discovery {
+    Idle,
+    Running { cancel: Arc<AtomicBool> },
+    /// (영상, 선택 여부)
+    Done { videos: Vec<(UrlVideo, bool)> },
+    Failed(String),
+}
+
+/// URL 변환 화면 상태
+pub struct UrlUi {
+    pub input: String,
+    pub discovery: Discovery,
+    pub discover_requested: bool,
+    pub ytdlp: ToolStatus,
+    pub ytdlp_check_requested: bool,
+    pub ytdlp_install: Option<FfmpegInstall>,
+    pub ytdlp_install_requested: bool,
+}
+
+impl UrlUi {
+    pub fn selected_count(&self) -> usize {
+        match &self.discovery {
+            Discovery::Done { videos } => videos.iter().filter(|(_, s)| *s).count(),
+            _ => 0,
+        }
+    }
 }
 
 /// ffprobe 검사 상태.
@@ -129,6 +209,14 @@ pub struct AppState {
     /// FFmpeg 자동 설치 진행 상태
     pub ffmpeg_install: Option<FfmpegInstall>,
     pub ffmpeg_install_requested: bool,
+
+    /// 파일 / URL 입력 방식
+    pub input_mode: InputMode,
+    pub url_ui: UrlUi,
+    /// 영상 받기 목록과, 아직 작업 스레드로 보내지 않은 요청
+    pub downloads: Vec<DownloadItem>,
+    pub download_requests: Vec<DownloadRequest>,
+    next_download_id: u64,
 
     /// 하드웨어 정보 (시작 시 백그라운드에서 수집)
     pub system: Option<SystemProfile>,
@@ -255,6 +343,19 @@ impl AppState {
             batch: None,
             ffmpeg_install: None,
             ffmpeg_install_requested: false,
+            input_mode: InputMode::Url,
+            downloads: Vec::new(),
+            download_requests: Vec::new(),
+            next_download_id: 1,
+            url_ui: UrlUi {
+                input: String::new(),
+                discovery: Discovery::Idle,
+                discover_requested: false,
+                ytdlp: ToolStatus::Unknown,
+                ytdlp_check_requested: true,
+                ytdlp_install: None,
+                ytdlp_install_requested: false,
+            },
             system: None,
             system_refresh_requested: false,
             benchmark_requested: None,
@@ -434,6 +535,26 @@ impl AppState {
 
     /// 변환 가능한 상태인지. 불가하면 사유를 돌려준다.
     pub fn start_blocker(&self) -> Option<String> {
+        if let Some(reason) = self.engine_blocker() {
+            return Some(reason);
+        }
+        if self.files.iter().any(|f| f.url.is_some() && Self::is_startable(f))
+            && !matches!(self.url_ui.ytdlp, ToolStatus::Found { .. })
+        {
+            return Some("URL 변환 구성 요소를 먼저 설치하세요.".to_owned());
+        }
+        if !self.files.iter().any(Self::is_startable) {
+            return Some(if self.has_active_jobs() {
+                "변환이 진행 중입니다. 파일을 더 추가하면 이어서 시작할 수 있습니다.".to_owned()
+            } else {
+                "변환할 파일이 없습니다. 파일을 추가하세요.".to_owned()
+            });
+        }
+        None
+    }
+
+    /// 파일 목록과 무관한 시작 조건 (FFmpeg · 모델 · API Key 등). URL 화면에서 선택 전에 미리 확인한다.
+    pub fn engine_blocker(&self) -> Option<String> {
         if !matches!(self.ffmpeg, FfmpegStatus::Found { .. }) {
             return Some("FFmpeg 를 찾을 수 없습니다.".to_owned());
         }
@@ -469,13 +590,6 @@ impl AppState {
                 return Some(format!("{} 모델이 설치되어 있지 않습니다. 설정에서 다운로드하세요.", model.label()));
             }
         }
-        if !self.files.iter().any(Self::is_startable) {
-            return Some(if self.has_active_jobs() {
-                "변환이 진행 중입니다. 파일을 더 추가하면 이어서 시작할 수 있습니다.".to_owned()
-            } else {
-                "변환할 파일이 없습니다. 파일을 추가하세요.".to_owned()
-            });
-        }
         None
     }
 
@@ -507,6 +621,9 @@ impl AppState {
         let language = self.settings.language;
         let ffmpeg_dir = self.settings.ffmpeg_dir.clone();
         let engine_label = self.engine_label();
+        let url_auth = self.settings.url_auth.clone();
+        let ytdlp_dir = self.paths.ytdlp_dir.clone();
+        let temp_dir = self.paths.temp_dir.clone();
 
         // 진행 중인 작업이 없으면 새 일괄 처리로 통계를 시작한다 (진행 중이면 이어서 집계)
         if !self.has_active_jobs() {
@@ -522,9 +639,16 @@ impl AppState {
                 JobEngine::Local { model, model_path: model_path.clone() }
             };
             let cancel = Arc::new(AtomicBool::new(false));
+            let url = file.url.clone().map(|video| UrlJob {
+                video,
+                auth: url_auth.clone(),
+                ytdlp_dir: ytdlp_dir.clone(),
+                temp_dir: temp_dir.clone(),
+            });
             jobs.push(TranscribeJob {
                 id: file.id,
                 input: file.path.clone(),
+                url,
                 duration: info.duration,
                 output_dir: output_dir.clone(),
                 engine,
@@ -771,8 +895,100 @@ impl AppState {
             probe: ProbeState::Pending,
             job: JobState::Idle,
             engine_label: None,
+            url: None,
         });
         true
+    }
+
+    /// URL 에서 고른 영상들을 변환 목록에 추가한다. 이미 있는 영상은 건너뛴다.
+    /// 반환: (추가된 개수, 건너뛴 개수)
+    pub fn add_url_videos(&mut self, videos: Vec<UrlVideo>) -> (usize, usize) {
+        let (mut added, mut skipped) = (0, 0);
+        for video in videos {
+            let key = PathBuf::from(video.key());
+            if video.unsupported_reason().is_some() || self.known_paths.contains(&key) {
+                skipped += 1;
+                continue;
+            }
+            let id = self.next_file_id;
+            self.next_file_id += 1;
+            self.known_paths.insert(key.clone());
+            let info = MediaInfo {
+                format_name: video.ext.clone(),
+                duration: video.duration,
+                has_video: video.has_video,
+                audio: crate::media::AudioStreamInfo { codec: "스트리밍".to_owned(), sample_rate: None, channels: None },
+            };
+            self.files.push(InputFile {
+                id,
+                // 화면 표시와 중복 확인용 (실제 파일 경로가 아님)
+                path: key,
+                display_name: video.title.clone(),
+                size_bytes: 0,
+                probe: ProbeState::Ready(info),
+                job: JobState::Idle,
+                engine_label: None,
+                url: Some(video),
+            });
+            added += 1;
+        }
+        (added, skipped)
+    }
+
+    /// URL 화면에서 선택한 영상을 변환 목록에 넣고 선택을 해제한다. 넣은 개수를 돌려준다.
+    /// URL 화면에서 선택한 영상을 받기 목록에 넣고 선택을 해제한다. 넣은 개수를 돌려준다.
+    pub fn queue_selected_downloads(&mut self) -> usize {
+        let selected: Vec<UrlVideo> = match &mut self.url_ui.discovery {
+            Discovery::Done { videos } => videos
+                .iter_mut()
+                .filter(|(v, s)| *s && v.unsupported_reason().is_none())
+                .map(|(v, s)| {
+                    *s = false;
+                    v.clone()
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let count = selected.len();
+        for video in selected {
+            let id = self.next_download_id;
+            self.next_download_id += 1;
+            let cancel = Arc::new(AtomicBool::new(false));
+            self.downloads.push(DownloadItem {
+                id,
+                title: video.title.clone(),
+                state: DownloadState::Queued,
+                cancel: Arc::clone(&cancel),
+            });
+            self.download_requests.push(DownloadRequest { id, video, cancel });
+        }
+        count
+    }
+
+    pub fn has_active_downloads(&self) -> bool {
+        self.downloads.iter().any(DownloadItem::is_active)
+    }
+
+    pub fn cancel_downloads(&self) {
+        for d in self.downloads.iter().filter(|d| d.is_active()) {
+            d.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub fn queue_selected_urls(&mut self) -> usize {
+        let selected: Vec<UrlVideo> = match &mut self.url_ui.discovery {
+            Discovery::Done { videos } => videos
+                .iter_mut()
+                .filter(|(_, s)| *s)
+                .map(|(v, s)| {
+                    *s = false;
+                    v.clone()
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let (added, _) = self.add_url_videos(selected);
+        added
     }
 
     /// 목록에서 제거한다. 진행 중인 작업은 취소한다 (이미 저장된 결과 파일은 유지).
@@ -854,6 +1070,8 @@ mod tests {
             log_dir: dir.join("logs"),
             models_dir: dir.join("models"),
             ffmpeg_dir: dir.join("ffmpeg"),
+            ytdlp_dir: dir.join("yt-dlp"),
+            temp_dir: dir.join("tmp"),
             default_output_dir: dir.join("out"),
         };
         let mut state = AppState::new(paths, Settings::default());
@@ -890,6 +1108,8 @@ mod tests {
             log_dir: dir.join("logs"),
             models_dir: dir.join("models"),
             ffmpeg_dir: dir.join("ffmpeg"),
+            ytdlp_dir: dir.join("yt-dlp"),
+            temp_dir: dir.join("tmp"),
             default_output_dir: dir.join("out"),
         };
         (AppState::new(paths, Settings::default()), dir)

@@ -13,18 +13,24 @@ const MAX_NAME_SUFFIX: u32 = 9_999;
 /// - 파일명: 원본 파일명 기반 (`강의.mp4` → `강의.txt`)
 /// - 기존 파일은 덮어쓰지 않는다: `강의 (1).txt`, `강의 (2).txt` … 로 저장
 /// - 빈 결과는 저장하지 않고 오류를 반환한다.
+#[cfg(test)]
 pub fn save_txt(output_dir: &Path, input: &Path, transcript: &Transcript) -> Result<PathBuf, OutputError> {
-    if transcript.is_empty() {
-        return Err(OutputError::EmptyResult);
-    }
-    let text = transcript.plain_text();
-    std::fs::create_dir_all(output_dir).map_err(|e| OutputError::io(output_dir, e))?;
-
     let stem = input
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "transcript".to_owned());
+    save_txt_named(output_dir, &stem, transcript)
+}
+
+/// 결과 이름(확장자 제외)을 직접 지정해 저장한다 (URL 영상은 제목 기반).
+pub fn save_txt_named(output_dir: &Path, stem: &str, transcript: &Transcript) -> Result<PathBuf, OutputError> {
+    if transcript.is_empty() {
+        return Err(OutputError::EmptyResult);
+    }
+    let text = transcript.plain_text();
+    std::fs::create_dir_all(output_dir).map_err(|e| OutputError::io(output_dir, e))?;
+    let stem = if stem.trim().is_empty() { "transcript".to_owned() } else { stem.to_owned() };
 
     for n in 0..=MAX_NAME_SUFFIX {
         let name = if n == 0 { format!("{stem}.txt") } else { format!("{stem} ({n}).txt") };

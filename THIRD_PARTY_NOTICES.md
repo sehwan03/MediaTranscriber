@@ -35,6 +35,15 @@ cargo about generate about.hbs > licenses.html
 - 소스 코드: <https://ffmpeg.org/download.html#get-sources>, 빌드 스크립트: <https://github.com/BtbN/FFmpeg-Builds>
 - MediaTranscriber 는 FFmpeg 를 별도 프로세스로 실행하며 링크하지 않습니다.
 
+### yt-dlp (Unlicense)
+
+- 출처: [yt-dlp/yt-dlp 공식 릴리스](https://github.com/yt-dlp/yt-dlp/releases) — `yt-dlp.exe` 와 `SHA2-256SUMS` 로 무결성 확인
+- 용도: URL 변환에서 영상 탐색과 선택한 영상의 스트림 받기 (사용자가 「yt-dlp 자동 설치」를 누를 때만 내려받음)
+- 라이선스: [The Unlicense](https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE) (퍼블릭 도메인).
+  Windows 실행 파일에는 Python 런타임 등 번들 구성 요소가 포함되며 각자의 라이선스를 따릅니다
+  ([THIRD_PARTY_LICENSES](https://github.com/yt-dlp/yt-dlp/blob/master/THIRD_PARTY_LICENSES.txt)).
+- MediaTranscriber 는 yt-dlp 를 별도 프로세스로 실행하며 링크하지 않습니다.
+
 ### Whisper 모델 (ggml 형식)
 
 - 출처: [ggerganov/whisper.cpp (Hugging Face)](https://huggingface.co/ggerganov/whisper.cpp)
@@ -48,3 +57,5 @@ Cloud 모드는 사용자가 입력한 API Key 로 OpenAI 또는 Google Gemini A
 - OpenAI: <https://openai.com/policies>
 - Google Gemini API: <https://ai.google.dev/gemini-api/terms> — 무료 등급(Unpaid)으로 보낸 내용은
   Google 제품 개선에 사용되고 사람이 검토할 수 있습니다.
+
+URL 변환은 사용자가 입력한 주소의 사이트에 접속합니다. 해당 사이트의 이용 약관과 저작권 정책은 사용자가 준수해야 합니다.

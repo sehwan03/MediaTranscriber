@@ -9,6 +9,7 @@ mod output;
 mod speech;
 mod system;
 mod task;
+mod url;
 mod ui;
 mod utils;
 

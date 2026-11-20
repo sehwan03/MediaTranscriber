@@ -117,15 +117,19 @@ fn process(
     let JobEngine::Cloud { settings, api_key } = &job.engine else {
         return Err(JobError::Failed("Cloud 작업이 아닙니다".to_owned()));
     };
-    let send = |stage: Stage, progress: f32| {
+    let raw = |stage: Stage, progress: f32| {
         let _ = tx.send(TaskEvent::Progress { id: job.id, stage, progress });
         notify();
     };
+    // URL 작업이면 오디오를 임시 WAV 로 받는다 (input 이 사라질 때 자동 삭제)
+    let input = super::input::prepare(job, tools, &raw)?;
+    let is_url = job.url.is_some();
+    let send = |stage: Stage, p: f32| raw(stage, if is_url { super::input::remap_url(p) } else { p });
     send(Stage::Uploading, 0.0);
     let transcript = client.transcribe_file(
         tools,
-        &job.input,
-        job.duration,
+        input.path(),
+        input.duration,
         api_key,
         settings,
         job.language,
@@ -136,5 +140,5 @@ fn process(
         return Err(JobError::Cancelled);
     }
     send(Stage::Saving, TRANSCRIBE_END);
-    Ok(txt::save_txt(&job.output_dir, &job.input, &transcript)?)
+    Ok(txt::save_txt_named(&job.output_dir, &input.output_stem, &transcript)?)
 }

@@ -218,7 +218,33 @@ fn auto_card(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 fn start_controls(ui: &mut egui::Ui, state: &mut AppState) {
-    let blocker = state.start_blocker();
+    // URL 화면에서 영상을 골랐으면: 고른 영상만 목록에 넣고 바로 시작 (고르기 전에는 누를 수 없음)
+    let selected = state.url_ui.selected_count();
+    if state.input_mode == crate::app::InputMode::Url && selected > 0 {
+        let blocker = state.engine_blocker().or_else(|| {
+            (!matches!(state.url_ui.ytdlp, crate::app::ToolStatus::Found { .. }))
+                .then(|| "URL 변환 구성 요소를 먼저 설치하세요.".to_owned())
+        });
+        let start = theme::big_button(ui, &format!("선택한 영상 변환 · {selected}개"), 46.0, blocker.is_none(), true);
+        if let Some(reason) = &blocker {
+            ui.label(RichText::new(reason).size(12.0).color(theme::TEXT_FAINT));
+        } else if start.clicked() {
+            let added = state.queue_selected_urls();
+            if added == 0 {
+                state.set_status(crate::app::StatusLevel::Warning, "선택한 영상은 이미 작업 목록에 있습니다.");
+            }
+            state.start_requested = true;
+        }
+        cancel_all_button(ui, state);
+        return;
+    }
+    let blocker = state.start_blocker().map(|r| {
+        if state.input_mode == crate::app::InputMode::Url && !state.has_active_jobs() && r.starts_with("변환할 파일이 없습니다") {
+            "변환할 영상을 찾아 선택하세요.".to_owned()
+        } else {
+            r
+        }
+    });
     let ready = state.files.iter().filter(|f| matches!(f.probe, crate::app::ProbeState::Ready(_)) && !f.job.is_active() && !matches!(f.job, crate::app::JobState::Completed { .. })).count();
     let label = if ready > 0 && blocker.is_none() { format!("변환 시작 · {ready}개") } else { "변환 시작".to_owned() };
     let start = theme::big_button(ui, &label, 46.0, blocker.is_none(), true);
@@ -227,6 +253,10 @@ fn start_controls(ui: &mut egui::Ui, state: &mut AppState) {
     } else if start.clicked() {
         state.start_requested = true;
     }
+    cancel_all_button(ui, state);
+}
+
+fn cancel_all_button(ui: &mut egui::Ui, state: &mut AppState) {
     if state.has_active_jobs() {
         ui.add_space(4.0);
         if theme::big_button(ui, "전체 취소", 36.0, true, false).clicked() {

@@ -102,6 +102,7 @@ fn cloud_job(id: u64, input: &Path, out: &Path, url: &str, concurrency: u32) -> 
     let job = TranscribeJob {
         id,
         input: input.to_path_buf(),
+        url: None,
         duration: None,
         output_dir: out.to_path_buf(),
         engine: JobEngine::Cloud { settings, api_key: ApiKey::new("fake-queue-test-key-000").expect("key") },
@@ -176,6 +177,7 @@ fn failed_local_job_does_not_stop_next_jobs() {
             .submit(TranscribeJob {
                 id,
                 input: if id == 1 { dir.join("없는 파일.mp3") } else { input.clone() },
+                url: None,
                 duration: None,
                 output_dir: dir.clone(),
                 // 2번도 없는 모델 경로 → 실패하지만, 1번 실패 후에도 처리되어야 한다
@@ -195,4 +197,43 @@ fn failed_local_job_does_not_stop_next_jobs() {
         }
     }
     let _ = std::fs::remove_dir_all(dir.parent().unwrap_or(&dir));
+}
+
+/// 어떤 요청이든 {"text": text} 로 답하는 모의 OpenAI 서버. 반환: base_url
+pub(crate) fn text_server(text: &str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let url = format!("http://{}/v1", listener.local_addr().expect("addr"));
+    let body = serde_json::json!({ "text": text }).to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let body = body.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(&stream);
+                let mut len = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let l = line.trim_end();
+                    if l.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = l.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut buf = vec![0u8; len];
+                let _ = reader.read_exact(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let mut s = stream;
+                let _ = s.write_all(resp.as_bytes());
+            });
+        }
+    });
+    url
 }

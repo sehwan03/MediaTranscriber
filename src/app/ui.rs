@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use egui::RichText;
 
-use super::state::{AppState, FfmpegStatus, KeyCheck, ModelOp, ModelOpKind, StatusLevel, View};
+use super::state::{AppState, Discovery, DownloadState, FfmpegStatus, ToolStatus, KeyCheck, ModelOp, ModelOpKind, StatusLevel, View};
 use crate::config::secret;
 use crate::config::{AppPaths, CloudProvider, Settings};
 use crate::media::format_duration;
@@ -16,6 +16,7 @@ use crate::system::SystemProfile;
 use crate::task::{BenchmarkJob, TaskManager};
 use crate::ui;
 use crate::ui::theme;
+use crate::url::{UrlError, UrlVideo, YtDlp};
 
 /// eframe 애플리케이션 루트.
 pub struct MediaTranscriberApp {
@@ -33,6 +34,36 @@ pub struct MediaTranscriberApp {
     system_rx: Receiver<SystemProfile>,
     install_tx: Sender<InstallEvent>,
     install_rx: Receiver<InstallEvent>,
+    /// URL 변환: yt-dlp 확인/설치, 영상 탐색 결과
+    url_tx: Sender<UrlEvent>,
+    url_rx: Receiver<UrlEvent>,
+    /// 탐색 요청 번호 (취소 후 늦게 도착한 이전 결과를 무시)
+    discover_gen: u64,
+    /// 영상 받기 작업 스레드 (처음 요청할 때 만든다. 한 번에 하나씩 받는다)
+    download_jobs: Option<Sender<DownloadJob>>,
+    download_tx: Sender<DownloadEvent>,
+    download_rx: Receiver<DownloadEvent>,
+}
+
+struct DownloadJob {
+    request: super::state::DownloadRequest,
+    auth: crate::url::UrlAuth,
+    out_dir: PathBuf,
+    temp_dir: PathBuf,
+    ytdlp_dir: PathBuf,
+    ffmpeg_dir: Option<PathBuf>,
+}
+
+enum DownloadEvent {
+    Progress { id: u64, progress: f32, merging: bool },
+    Finished { id: u64, result: Result<PathBuf, UrlError> },
+}
+
+enum UrlEvent {
+    YtDlp(Result<String, String>),
+    InstallProgress(u64, u64),
+    InstallFinished(Result<String, String>),
+    Discovered { generation: u64, result: Result<Vec<UrlVideo>, UrlError> },
 }
 
 enum InstallEvent {
@@ -96,8 +127,33 @@ impl MediaTranscriberApp {
         let (key_tx, key_rx) = mpsc::channel();
         let (system_tx, system_rx) = mpsc::channel();
         let (install_tx, install_rx) = mpsc::channel();
+        let (url_tx, url_rx) = mpsc::channel();
+        let (download_tx, download_rx) = mpsc::channel();
 
-        let mut app = Self { state, media, tasks, models, key_tx, key_rx, system_tx, system_rx, install_tx, install_rx };
+        // 지난 실행이 비정상 종료로 남긴 URL 임시 오디오 정리
+        let removed = crate::utils::tempfile::cleanup_stale(&state.paths.temp_dir, "url");
+        if removed > 0 {
+            tracing::info!(removed, "이전 실행의 임시 파일 정리");
+        }
+
+        let mut app = Self {
+            state,
+            media,
+            tasks,
+            models,
+            key_tx,
+            key_rx,
+            system_tx,
+            system_rx,
+            install_tx,
+            install_rx,
+            url_tx,
+            url_rx,
+            discover_gen: 0,
+            download_jobs: None,
+            download_tx,
+            download_rx,
+        };
         // 최초 실행 시 하드웨어 검사 (백그라운드)
         app.collect_system_info(&cc.egui_ctx);
         app
@@ -165,6 +221,240 @@ impl MediaTranscriberApp {
         match spawned {
             Ok(_) => self.state.ffmpeg_install = Some(crate::app::FfmpegInstall { done: 0, total: 0, cancel }),
             Err(err) => self.state.set_status(StatusLevel::Error, format!("설치 스레드 생성 실패: {err}")),
+        }
+    }
+
+    /// URL 변환: yt-dlp 확인·설치, 영상 탐색 (모두 백그라운드 스레드, UI 는 멈추지 않음)
+    fn sync_url(&mut self, ctx: &egui::Context) {
+        while let Ok(event) = self.url_rx.try_recv() {
+            let u = &mut self.state.url_ui;
+            match event {
+                UrlEvent::YtDlp(Ok(version)) => u.ytdlp = ToolStatus::Found { version },
+                UrlEvent::YtDlp(Err(msg)) => u.ytdlp = ToolStatus::Missing(msg),
+                UrlEvent::InstallProgress(done, total) => {
+                    if let Some(p) = u.ytdlp_install.as_mut() {
+                        p.done = done;
+                        p.total = total;
+                    }
+                }
+                UrlEvent::InstallFinished(result) => {
+                    u.ytdlp_install = None;
+                    match result {
+                        Ok(version) => {
+                            u.ytdlp = ToolStatus::Found { version: version.clone() };
+                            self.state.set_status(StatusLevel::Info, format!("URL 변환 구성 요소 설치 완료 ({version})"));
+                        }
+                        Err(msg) => self.state.set_status(StatusLevel::Error, format!("URL 변환 구성 요소 설치 실패: {msg}")),
+                    }
+                }
+                UrlEvent::Discovered { generation, result } => {
+                    if generation != self.discover_gen {
+                        continue;
+                    }
+                    match result {
+                        Ok(videos) => {
+                            let n = videos.len();
+                            u.discovery = Discovery::Done { videos: videos.into_iter().map(|v| (v, false)).collect() };
+                            self.state.set_status(StatusLevel::Info, format!("영상 {n}개를 찾았습니다. 변환할 영상을 선택하세요."));
+                        }
+                        Err(UrlError::Cancelled) => {
+                            u.discovery = Discovery::Idle;
+                            self.state.set_status(StatusLevel::Info, "영상 찾기를 취소했습니다.");
+                        }
+                        Err(err) => {
+                            let msg = err.to_string();
+                            u.discovery = Discovery::Failed(msg.clone());
+                            self.state.set_status(StatusLevel::Warning, msg);
+                        }
+                    }
+                }
+            }
+        }
+
+        // yt-dlp 확인 (yt-dlp.exe 는 시작이 1~2초 걸려 백그라운드에서)
+        let u = &mut self.state.url_ui;
+        if std::mem::take(&mut u.ytdlp_check_requested) && !matches!(u.ytdlp, ToolStatus::Checking) {
+            u.ytdlp = ToolStatus::Checking;
+            let dir = self.state.paths.ytdlp_dir.clone();
+            self.spawn_url_thread(ctx, "ytdlp-check", move || {
+                UrlEvent::YtDlp(YtDlp::locate(Some(&dir)).and_then(|y| y.version()).map_err(|e| e.to_string()))
+            });
+        }
+
+        let u = &mut self.state.url_ui;
+        if std::mem::take(&mut u.ytdlp_install_requested) && u.ytdlp_install.is_none() {
+            let cancel = Arc::new(AtomicBool::new(false));
+            u.ytdlp_install = Some(crate::app::FfmpegInstall { done: 0, total: 0, cancel: Arc::clone(&cancel) });
+            let dir = self.state.paths.ytdlp_dir.clone();
+            let (tx, progress_ctx) = (self.url_tx.clone(), ctx.clone());
+            self.spawn_url_thread(ctx, "ytdlp-install", move || {
+                let result = crate::url::installer::install(&dir, &cancel, |done, total| {
+                    let _ = tx.send(UrlEvent::InstallProgress(done, total));
+                    progress_ctx.request_repaint();
+                });
+                if let Err(e) = &result {
+                    tracing::warn!(error = %e, "yt-dlp 자동 설치 실패");
+                }
+                UrlEvent::InstallFinished(result.map(|(_, v)| v).map_err(|e| e.to_string()))
+            });
+        }
+
+        let u = &mut self.state.url_ui;
+        if std::mem::take(&mut u.discover_requested) && !matches!(u.discovery, Discovery::Running { .. }) {
+            let url = u.input.trim().to_owned();
+            // 주소 형식은 스레드를 띄우기 전에 확인한다 (http/https 만, 공백·제어문자 금지)
+            if let Err(err) = crate::url::safety::validate_url(&url) {
+                u.discovery = Discovery::Failed(err.to_string());
+                return;
+            }
+            let cancel = Arc::new(AtomicBool::new(false));
+            u.discovery = Discovery::Running { cancel: Arc::clone(&cancel) };
+            self.discover_gen += 1;
+            let generation = self.discover_gen;
+            let dir = self.state.paths.ytdlp_dir.clone();
+            let auth = self.state.settings.url_auth.clone();
+            let ffmpeg_dir = self.state.settings.ffmpeg_dir.clone();
+            tracing::info!(url = %crate::url::safety::redact_url(&url), "영상 찾기 시작");
+            self.spawn_url_thread(ctx, "url-discover", move || {
+                let result = YtDlp::locate(Some(&dir)).and_then(|y| crate::url::discover(&y, &url, &auth, &cancel)).map(|mut videos| {
+                    // 직접 MP4 등 길이를 못 준 항목은 ffprobe 로 보충
+                    if let Ok(tools) = crate::media::FfmpegTools::locate(ffmpeg_dir.as_deref()) {
+                        crate::url::fill_missing_durations(&mut videos, &tools, &cancel);
+                    }
+                    videos
+                });
+                let result = match result {
+                    Ok(_) if cancel.load(std::sync::atomic::Ordering::Relaxed) => Err(UrlError::Cancelled),
+                    other => other,
+                };
+                match &result {
+                    Ok(v) => tracing::info!(count = v.len(), "영상 찾기 완료"),
+                    Err(e) => tracing::warn!(error = %e, "영상 찾기 실패"),
+                }
+                UrlEvent::Discovered { generation, result }
+            });
+        }
+    }
+
+    /// 영상 받기: 결과 반영, 새 요청을 작업 스레드로 전달
+    fn sync_downloads(&mut self, ctx: &egui::Context) {
+        while let Ok(event) = self.download_rx.try_recv() {
+            match event {
+                DownloadEvent::Progress { id, progress, merging } => {
+                    if let Some(d) = self.state.downloads.iter_mut().find(|d| d.id == id) {
+                        d.state = DownloadState::Running { progress, merging };
+                    }
+                }
+                DownloadEvent::Finished { id, result } => {
+                    let Some(d) = self.state.downloads.iter_mut().find(|d| d.id == id) else { continue };
+                    let title = d.title.clone();
+                    match result {
+                        Ok(path) => {
+                            d.state = DownloadState::Done(path);
+                            self.state.set_status(StatusLevel::Info, format!("영상을 저장했습니다: {title}"));
+                        }
+                        Err(UrlError::Cancelled) => d.state = DownloadState::Cancelled,
+                        Err(err) => {
+                            let msg = err.to_string();
+                            d.state = DownloadState::Failed(msg.clone());
+                            self.state.set_status(StatusLevel::Error, format!("영상 저장 실패: {msg}"));
+                        }
+                    }
+                }
+            }
+        }
+
+        let requests = std::mem::take(&mut self.state.download_requests);
+        if requests.is_empty() {
+            return;
+        }
+        if self.download_jobs.is_none() {
+            self.download_jobs = self.spawn_download_worker(ctx);
+        }
+        let Some(jobs) = &self.download_jobs else {
+            for r in requests {
+                if let Some(d) = self.state.downloads.iter_mut().find(|d| d.id == r.id) {
+                    d.state = DownloadState::Failed("작업 스레드를 만들 수 없습니다".to_owned());
+                }
+            }
+            return;
+        };
+        for request in requests {
+            let job = DownloadJob {
+                request,
+                auth: self.state.settings.url_auth.clone(),
+                out_dir: self.state.output_dir().to_path_buf(),
+                temp_dir: self.state.paths.temp_dir.clone(),
+                ytdlp_dir: self.state.paths.ytdlp_dir.clone(),
+                ffmpeg_dir: self.state.settings.ffmpeg_dir.clone(),
+            };
+            if jobs.send(job).is_err() {
+                self.download_jobs = None;
+                self.state.set_status(StatusLevel::Error, "영상 받기 작업 스레드가 멈췄습니다. 다시 시도하세요.");
+                return;
+            }
+        }
+    }
+
+    fn spawn_download_worker(&self, ctx: &egui::Context) -> Option<Sender<DownloadJob>> {
+        let (job_tx, job_rx) = mpsc::channel::<DownloadJob>();
+        let (events, ctx) = (self.download_tx.clone(), ctx.clone());
+        let spawned = std::thread::Builder::new().name("video-download".to_owned()).spawn(move || {
+            for job in job_rx {
+                let id = job.request.id;
+                let cancel = &job.request.cancel;
+                let result = if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    Err(UrlError::Cancelled)
+                } else {
+                    let _ = events.send(DownloadEvent::Progress { id, progress: 0.0, merging: false });
+                    ctx.request_repaint();
+                    let mut last = -1.0f32;
+                    YtDlp::locate(Some(&job.ytdlp_dir)).and_then(|y| {
+                        let tools = crate::media::FfmpegTools::locate(job.ffmpeg_dir.as_deref())
+                            .map_err(|e| UrlError::Failed(e.to_string()))?;
+                        crate::url::download::download_video(
+                            &y,
+                            &tools,
+                            &job.request.video,
+                            &job.auth,
+                            &job.out_dir,
+                            &job.temp_dir,
+                            cancel,
+                            |stage, progress| {
+                                let merging = stage == crate::url::download::DownloadStage::Merging;
+                                if progress - last >= 0.005 || merging || progress >= 1.0 {
+                                    last = progress;
+                                    let _ = events.send(DownloadEvent::Progress { id, progress, merging });
+                                    ctx.request_repaint();
+                                }
+                            },
+                        )
+                    })
+                };
+                if let Err(e) = &result {
+                    tracing::warn!(id, error = %e, "영상 받기 끝 (실패/취소)");
+                }
+                let _ = events.send(DownloadEvent::Finished { id, result });
+                ctx.request_repaint();
+            }
+        });
+        match spawned {
+            Ok(_) => Some(job_tx),
+            Err(err) => {
+                tracing::error!(error = %err, "영상 받기 스레드 생성 실패");
+                None
+            }
+        }
+    }
+
+    fn spawn_url_thread(&self, ctx: &egui::Context, name: &str, work: impl FnOnce() -> UrlEvent + Send + 'static) {
+        let (tx, ctx) = (self.url_tx.clone(), ctx.clone());
+        let spawned = std::thread::Builder::new().name(name.to_owned()).spawn(move || {
+            let _ = tx.send(work());
+            ctx.request_repaint();
+        });
+        if let Err(err) = spawned {
+            tracing::error!(error = %err, name, "스레드 생성 실패");
         }
     }
 
@@ -364,6 +654,8 @@ impl eframe::App for MediaTranscriberApp {
         self.sync_key_check(ui.ctx());
         self.sync_system(ui.ctx());
         self.sync_ffmpeg_install(ui.ctx());
+        self.sync_url(ui.ctx());
+        self.sync_downloads(ui.ctx());
         self.state.persist_settings_if_changed();
     }
 
@@ -376,6 +668,17 @@ impl eframe::App for MediaTranscriberApp {
         }
         if let Some(install) = &self.state.ffmpeg_install {
             install.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(install) = &self.state.url_ui.ytdlp_install {
+            install.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Discovery::Running { cancel } = &self.state.url_ui.discovery {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if self.state.has_active_downloads() {
+            self.state.cancel_downloads();
+            // 받는 프로세스가 끝나고 받던 조각이 지워질 시간을 잠깐 준다 (남으면 다음 실행 때 정리)
+            std::thread::sleep(std::time::Duration::from_millis(600));
         }
         tracing::info!("종료 요청: 진행 중인 작업 취소");
     }

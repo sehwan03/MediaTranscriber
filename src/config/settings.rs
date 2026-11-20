@@ -210,6 +210,10 @@ pub struct Settings {
     pub cloud: CloudSettings,
     /// 로컬 성능 측정 결과 (모델별 최신 1개)
     pub benchmarks: Vec<BenchmarkResult>,
+    /// URL 변환: 로그인이 필요한 페이지용 인증 방법 (쿠키 내용은 저장하지 않음 — 브라우저 이름/파일 경로만)
+    pub url_auth: crate::url::UrlAuth,
+    /// 영상 파일 받기 (부가 기능, 기본 꺼짐)
+    pub video_download: bool,
 }
 
 impl Default for Settings {
@@ -222,6 +226,8 @@ impl Default for Settings {
             ffmpeg_dir: None,
             cloud: CloudSettings::default(),
             benchmarks: Vec::new(),
+            url_auth: crate::url::UrlAuth::None,
+            video_download: false,
         }
     }
 }
@@ -295,6 +301,8 @@ mod tests {
             ffmpeg_dir: Some(PathBuf::from(r"D:\도구\ff mpeg")),
             cloud: CloudSettings::default(),
             benchmarks: Vec::new(),
+            url_auth: crate::url::UrlAuth::Browser(crate::url::Browser::Edge),
+            video_download: true,
         };
         settings.save(&path).expect("save");
         let loaded = Settings::load(&path).expect("load").expect("exists");

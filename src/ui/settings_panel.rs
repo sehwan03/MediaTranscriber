@@ -246,6 +246,26 @@ fn sections(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(12.0);
 
     theme::card(ui, |ui| {
+        theme::card_title(ui, "URL 변환 구성 요소", Some("영상 주소에서 영상을 찾고 받는 데 yt-dlp 를 사용합니다"));
+        ytdlp_section(ui, state);
+    });
+    ui.add_space(12.0);
+
+    theme::card(ui, |ui| {
+        theme::card_title(ui, "영상 다운로드", Some("URL 변환에서 고른 영상을 최고 화질 영상 파일로 저장합니다"));
+        ui.checkbox(&mut state.settings.video_download, "영상 다운로드 사용");
+        ui.label(
+            RichText::new(format!(
+                "켜면 URL 변환 화면에 「선택한 영상 저장」 버튼이 생깁니다. 저장 위치: {} (변환 결과와 같은 폴더) · 화질이 높을수록 파일이 큽니다.",
+                state.output_dir().display()
+            ))
+            .size(11.5)
+            .color(theme::TEXT_FAINT),
+        );
+    });
+    ui.add_space(12.0);
+
+    theme::card(ui, |ui| {
         theme::card_title(ui, "시스템 정보", Some("Auto 모드가 엔진을 고를 때 사용합니다"));
         system_info(ui, state);
     });
@@ -259,6 +279,7 @@ fn sections(ui: &mut egui::Ui, state: &mut AppState) {
                 ("로그 폴더", &state.paths.log_dir),
                 ("모델 폴더", &state.paths.models_dir),
                 ("FFmpeg 자동 설치", &state.paths.ffmpeg_dir),
+                ("yt-dlp 자동 설치", &state.paths.ytdlp_dir),
             ] {
                 label_col(ui, name);
                 let w = ui.available_width().max(160.0);
@@ -281,6 +302,65 @@ fn sections(ui: &mut egui::Ui, state: &mut AppState) {
         });
     });
     ui.add_space(20.0);
+}
+
+fn ytdlp_section(ui: &mut egui::Ui, state: &mut AppState) {
+    use crate::app::ToolStatus;
+    let u = &mut state.url_ui;
+    egui::Grid::new("ytdlp_grid").num_columns(2).spacing([16.0, 12.0]).show(ui, |ui| {
+        label_col(ui, "상태");
+        ui.horizontal(|ui| {
+            match &u.ytdlp {
+                ToolStatus::Unknown | ToolStatus::Checking => {
+                    theme::pill(ui, "확인 중", Tone::Neutral);
+                }
+                ToolStatus::Found { version } => {
+                    theme::pill(ui, &format!("사용 가능 · yt-dlp {version}"), Tone::Success);
+                }
+                ToolStatus::Missing(msg) => {
+                    theme::pill(ui, "설치 안 됨", Tone::Warn).on_hover_text(msg.as_str());
+                }
+            }
+            if let Some(p) = &u.ytdlp_install {
+                let frac = if p.total > 0 { p.done as f32 / p.total as f32 } else { 0.0 };
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(140.0, 6.0), egui::Sense::hover());
+                theme::paint_progress(ui.painter(), rect, frac, theme::ACCENT);
+                if ui.small_button("취소").clicked() {
+                    p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        });
+        ui.end_row();
+
+        label_col(ui, "");
+        ui.horizontal(|ui| {
+            let installed = matches!(u.ytdlp, ToolStatus::Found { .. });
+            let label = if installed {
+                "최신 버전으로 업데이트".to_owned()
+            } else {
+                format!("자동 설치 (약 {} MB)", crate::url::installer::APPROX_DOWNLOAD_MB)
+            };
+            if ui
+                .add_enabled(u.ytdlp_install.is_none(), egui::Button::new(label))
+                .on_hover_text("사이트 변경으로 영상을 찾지 못하면 업데이트해 보세요")
+                .clicked()
+            {
+                u.ytdlp_install_requested = true;
+            }
+            if ui.add_enabled(u.ytdlp_install.is_none(), egui::Button::new("다시 찾기")).clicked() {
+                u.ytdlp_check_requested = true;
+            }
+        });
+        ui.end_row();
+    });
+    ui.label(
+        RichText::new(format!(
+            "출처: {} · SHA-256 확인 후 앱 데이터 폴더에 설치. 로그인 정보는 앱이 저장하지 않고, 선택한 브라우저 이름이나 쿠키 파일 경로만 yt-dlp 에 넘깁니다.",
+            crate::url::installer::source_description()
+        ))
+        .size(11.5)
+        .color(theme::TEXT_FAINT),
+    );
 }
 
 fn model_text(model: WhisperModel) -> String {

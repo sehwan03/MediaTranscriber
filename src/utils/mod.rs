@@ -1,5 +1,6 @@
 pub mod error;
 pub mod logger;
+pub mod tempfile;
 
 /// 바이트 수를 사람이 읽기 쉬운 문자열로 변환한다.
 pub fn format_bytes(bytes: u64) -> String {

@@ -1,6 +1,6 @@
 [package]
 name = "media-transcriber"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "MediaTranscriber - 음성 및 동영상 텍스트 추출 프로그램"
 license = "MIT OR Apache-2.0"
@@ -16,7 +16,7 @@ name = "MediaTranscriber"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "persistence", "clipboard"] }
 egui = "0.37"
 rfd = "0.18"
 serde = { version = "1", features = ["derive"] }

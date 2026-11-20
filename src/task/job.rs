@@ -13,6 +13,7 @@ use crate::media::MediaError;
 use crate::output::OutputError;
 use crate::speech::SpeechError;
 use crate::speech::cloud::CloudError;
+use crate::url::{UrlAuth, UrlVideo};
 
 /// 작업에 사용할 엔진.
 pub enum JobEngine {
@@ -21,9 +22,20 @@ pub enum JobEngine {
     Cloud { settings: CloudSettings, api_key: ApiKey },
 }
 
+/// URL 영상 작업 정보 (선택한 영상 하나)
+pub struct UrlJob {
+    pub video: UrlVideo,
+    pub auth: UrlAuth,
+    pub ytdlp_dir: PathBuf,
+    pub temp_dir: PathBuf,
+}
+
 pub struct TranscribeJob {
     pub id: u64,
+    /// 파일 작업의 입력 경로 (URL 작업은 화면 표시용 이름)
     pub input: PathBuf,
+    /// URL 작업이면 Some — 시작할 때 오디오를 임시 WAV 로 받아 같은 과정으로 처리한다.
+    pub url: Option<UrlJob>,
     pub duration: Option<Duration>,
     pub output_dir: PathBuf,
     pub engine: JobEngine,
@@ -43,6 +55,7 @@ pub struct BenchmarkJob {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
+    Downloading,
     LoadingModel,
     Decoding,
     Transcribing,
@@ -53,6 +66,7 @@ pub enum Stage {
 impl Stage {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Downloading => "영상 오디오 받는 중",
             Self::LoadingModel => "모델 로드 중",
             Self::Decoding => "오디오 추출 중",
             Self::Transcribing => "인식 중",
@@ -122,7 +136,12 @@ pub(super) fn finish_event(job: &TranscribeJob, result: Result<PathBuf, JobError
             TaskEvent::Cancelled { id }
         }
         Err(JobError::Failed(error)) => {
-            tracing::warn!(id, file = %job.input.display(), %error, "변환 실패");
+            // URL 작업은 표시 이름만 (주소·토큰을 로그에 남기지 않음)
+            let file = match &job.url {
+                Some(u) => crate::url::safety::redact_url(&u.video.source_url),
+                None => job.input.display().to_string(),
+            };
+            tracing::warn!(id, %file, url = job.url.is_some(), %error, "변환 실패");
             TaskEvent::Failed { id, error }
         }
     }

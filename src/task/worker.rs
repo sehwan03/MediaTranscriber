@@ -112,29 +112,42 @@ fn process(
     check_cancel(&job.cancel)?;
     let tools = state.tools(&job.ffmpeg_dir)?;
 
+    // URL 작업이면 오디오를 임시 WAV 로 받는다 (input 이 사라질 때 자동 삭제)
+    let input = super::input::prepare(job, &tools, &*send)?;
+    check_cancel(&job.cancel)?;
+    // 이후 단계의 진행률은 URL 작업이면 40~100% 로 옮긴다
+    let raw = Arc::clone(&send);
+    let is_url = job.url.is_some();
+    let send: Progress = Arc::new(move |stage: Stage, p: f32| {
+        raw(stage, if is_url { super::input::remap_url(p) } else { p });
+    });
+
     if state.whisper.as_ref().map(LocalWhisper::model) != Some(*model) {
         send(Stage::LoadingModel, 0.0);
     }
     let whisper = state.whisper(*model, model_path)?;
     check_cancel(&job.cancel)?;
 
-    let transcript = transcribe_file(whisper, &tools, job, LOCAL_CHUNK_THRESHOLD, LOCAL_CHUNK, &send)?;
+    let transcript = transcribe_file(whisper, &tools, job, input.path(), input.duration, LOCAL_CHUNK_THRESHOLD, LOCAL_CHUNK, &send)?;
     check_cancel(&job.cancel)?;
 
     send(Stage::Saving, TRANSCRIBE_END);
-    Ok(txt::save_txt(&job.output_dir, &job.input, &transcript)?)
+    Ok(txt::save_txt_named(&job.output_dir, &input.output_stem, &transcript)?)
 }
 
 /// 파일 하나를 인식한다. `threshold` 보다 길면 `chunk` 길이로 나눠 처리한다.
+#[allow(clippy::too_many_arguments)]
 fn transcribe_file(
     whisper: &LocalWhisper,
     tools: &FfmpegTools,
     job: &TranscribeJob,
+    input: &Path,
+    duration: Option<Duration>,
     threshold: Duration,
     chunk: Duration,
     send: &Progress,
 ) -> Result<Transcript, JobError> {
-    let ranges: Vec<(Duration, Option<Duration>)> = match job.duration {
+    let ranges: Vec<(Duration, Option<Duration>)> = match duration {
         Some(total) if total > threshold => {
             let mut v = Vec::new();
             let mut start = Duration::ZERO;
@@ -159,10 +172,10 @@ fn transcribe_file(
         // 오디오 추출 (구간 또는 전체)
         send(Stage::Decoding, base);
         let pcm = match len {
-            Some(len) => audio::decode_range_pcm(tools, &job.input, *start, *len, &job.cancel)?,
+            Some(len) => audio::decode_range_pcm(tools, input, *start, *len, &job.cancel)?,
             None => {
                 let mut last = -1.0f32;
-                audio::decode_to_whisper_pcm(tools, &job.input, job.duration, &job.cancel, |p| {
+                audio::decode_to_whisper_pcm(tools, input, duration, &job.cancel, |p| {
                     if p - last >= 0.05 {
                         last = p;
                         send(Stage::Decoding, p * DECODE_SPAN);
@@ -365,6 +378,7 @@ mod tests {
         let job = TranscribeJob {
             id: 1,
             input: wav.clone(),
+            url: None,
             duration: Some(total),
             output_dir: dir.clone(),
             engine: JobEngine::Local { model: WhisperModel::Base, model_path: model_path.clone() },
@@ -380,7 +394,7 @@ mod tests {
             }
         });
         // 구간 길이를 짧게 해 여러 구간으로 나눈다 (전체 약 10초 → 4초 구간)
-        let t = transcribe_file(&whisper, &tools, &job, Duration::from_secs(1), Duration::from_secs(4), &report)
+        let t = transcribe_file(&whisper, &tools, &job, &wav, Some(total), Duration::from_secs(1), Duration::from_secs(4), &report)
             .expect("transcribe");
         let text = t.plain_text().to_lowercase();
         eprintln!("[chunked] {text}");

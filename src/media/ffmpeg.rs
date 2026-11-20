@@ -68,8 +68,37 @@ impl FfmpegTools {
         }
     }
 
-    pub(super) fn ffmpeg_command(&self) -> Command {
+    pub fn ffmpeg_path(&self) -> &Path {
+        &self.ffmpeg
+    }
+
+    pub(crate) fn ffmpeg_command(&self) -> Command {
         base_command(&self.ffmpeg)
+    }
+
+    /// 네트워크 주소의 재생 길이만 확인한다 (URL 변환 목록 표시용, 실패하면 None).
+    /// http/https 만 허용해 재생목록·리다이렉트로 로컬 파일 등에 접근하지 못하게 한다.
+    pub fn probe_url_duration(&self, url: &str, referer: Option<&str>) -> Option<Duration> {
+        let url = crate::url::safety::validate_url(url).ok()?;
+        let mut cmd = base_command(&self.ffprobe);
+        cmd.args(["-v", "error", "-rw_timeout", "15000000"])
+            .args(["-protocol_whitelist", "http,https,tcp,tls,crypto"]);
+        // 검증된 주소만 (공백·개행 불가 → 헤더 주입 방지)
+        if let Some(r) = referer.and_then(|r| crate::url::safety::validate_url(r).ok()) {
+            cmd.arg("-headers").arg(format!("Referer: {r}\r\n"));
+        }
+        let output = cmd
+            .args(["-show_entries", "format=duration", "-of", "json", "-i"])
+            .arg(&url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+        parse_seconds(v.pointer("/format/duration").and_then(serde_json::Value::as_str))
     }
 
     /// ffprobe 로 실제 미디어 정보를 검사한다. 확장자는 신뢰하지 않는다.
